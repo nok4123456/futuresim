@@ -99,7 +99,8 @@ class SearchHandler:
         
         try:
             results = self._search_tool.search(
-                query, max_results, effective_max_date, search_type, min_date
+                query, max_results, effective_max_date, search_type, min_date,
+                current_date=current_date.isoformat() if current_date else None,
             )
             if not results:
                 base = "No articles found matching your query."

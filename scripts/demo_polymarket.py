@@ -19,7 +19,7 @@ Usage:
     # With custom date range and model
     python scripts/demo_polymarket.py --slug some-market \\
         --start_date 2026-01-01 --end_date 2026-01-07 \\
-        --model deepseek-v4-pro --matching deepseek
+        --model deepseek-v4-flash --matching deepseek
 
     # Record today's Polymarket snapshot for historical tracking
     python scripts/demo_polymarket.py --slug some-market --record-snapshot
@@ -246,12 +246,14 @@ def run_futuresim(
     end_date: str,
     *,
     provider: str = "deepseek",
-    model: str = "deepseek-v4-pro",
+    model: str = "deepseek-v4-flash",
     matching: str = "exact",
     sim_name: str = "polymarket_demo",
-    max_actions: int = 10,
+    max_actions: int = 5,
     temperature: float = 0.7,
     no_inference: bool = False,
+    force_submit: bool = False,
+    run_timeout: int = 1800,  # 30 min default
 ) -> Optional[str]:
     """
     Run futuresim via subprocess and return the output directory path.
@@ -273,6 +275,12 @@ def run_futuresim(
     ]
     if no_inference:
         cmd.append("--no_inference")
+    if force_submit:
+        cmd.extend([
+            "--force_submit_threshold_tokens", "0",
+            "--submit_reserve_tokens", "0",
+            "--max_total_tokens", "32000",
+        ])
 
     print(f"\n[Runner] Launching futuresim...")
     print(f"[Runner] {' '.join(cmd)}")
@@ -284,7 +292,7 @@ def run_futuresim(
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=600,  # 10 min timeout
+            timeout=run_timeout,
         )
     except subprocess.TimeoutExpired:
         print("[Runner] Error: Simulation timed out after 10 minutes.")
@@ -488,25 +496,29 @@ def main():
     parser.add_argument("--start_date", default=None,
                         help="Simulation start date YYYY-MM-DD (default: today - 7 days)")
     parser.add_argument("--end_date", default=None,
-                        help="Simulation end date YYYY-MM-DD (default: today)")
+                        help="Simulation end date YYYY-MM-DD (default: market resolution + 7 days)")
     parser.add_argument("--resolution_date", default=None,
                         help="Override question resolution date YYYY-MM-DD (default: market endDate)")
 
     # Futuresim settings
     parser.add_argument("--provider", default="deepseek", choices=["deepseek", "openrouter"],
                         help="Inference provider (default: deepseek)")
-    parser.add_argument("--model", default="deepseek-v4-pro",
-                        help="Model ID for agent (default: deepseek-v4-pro)")
+    parser.add_argument("--model", default="deepseek-v4-flash",
+                        help="Model ID for agent (default: deepseek-v4-flash for speed)")
     parser.add_argument("--matching", default="exact", choices=["exact", "deepseek", "openrouter"],
                         help="Answer matching mode (default: exact for speed)")
     parser.add_argument("--sim_name", default="polymarket_demo",
                         help="Simulation name for output directory")
-    parser.add_argument("--max_actions", type=int, default=10,
-                        help="Max actions per day (default: 10)")
+    parser.add_argument("--max_actions", type=int, default=5,
+                        help="Max actions per day (default: 5)")
     parser.add_argument("--temperature", type=float, default=0.7,
                         help="Sampling temperature (default: 0.7)")
     parser.add_argument("--no_inference", action="store_true",
                         help="Run without LLM inference (dry-run test)")
+    parser.add_argument("--force_submit", action="store_true",
+                        help="Force earlier submissions (sets force_submit_threshold_tokens=0)")
+    parser.add_argument("--timeout", type=int, default=1800,
+                        help="Max runtime for futuresim subprocess in seconds (default: 1800 = 30 min)")
 
     # Output
     parser.add_argument("--output_dir", default=None,
@@ -549,7 +561,21 @@ def main():
     # ── 3. Run futuresim ────────────────────────────────────────────
     today = date.today()
     start_date = args.start_date or (today - timedelta(days=7)).isoformat()
-    end_date = args.end_date or today.isoformat()
+
+    # Default end_date: market resolution date + 7 days (so agent has time to
+    # submit before resolution). Override with --end_date if provided.
+    if args.end_date:
+        end_date = args.end_date
+    else:
+        res_date_str = q.get("resolution_date", "")
+        if res_date_str:
+            try:
+                res_dt = date.fromisoformat(res_date_str)
+                end_date = (res_dt + timedelta(days=7)).isoformat()
+            except ValueError:
+                end_date = today.isoformat()
+        else:
+            end_date = today.isoformat()
 
     print(f"\nStep 3/6: Running futuresim ({start_date} → {end_date})...")
     output_dir = run_futuresim(
@@ -563,6 +589,8 @@ def main():
         max_actions=args.max_actions,
         temperature=args.temperature,
         no_inference=args.no_inference,
+        force_submit=args.force_submit,
+        run_timeout=args.timeout,
     )
 
     if not output_dir:

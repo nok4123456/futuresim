@@ -48,14 +48,18 @@ class GoogleNewsSearchTool(BaseSearchTool):
         max_date: Optional[date] = None,
         search_type: str = "hybrid",
         min_date: Optional[date] = None,
+        current_date: Optional[str] = None,
     ) -> List[SearchResult]:
         """Search Google News via Serper.dev.
 
         Note: max_date / min_date / search_type are accepted for interface
         compatibility but Serper.dev does not support date-range filtering
         natively. Date filters are best-effort via the query string.
+
+        current_date: ISO date string of the simulation date (for logging / context).
         """
         del search_type  # not applicable — Serper always uses keyword match
+        del current_date  # unused for now — available for future filtering
         if not self._available:
             return []
 

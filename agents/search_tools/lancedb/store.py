@@ -87,8 +87,10 @@ class LanceDBSearchTool(BaseSearchTool):
         except Exception as e:
             print(f"[LanceDB] Failed to connect: {e}")
     
-    def search(self, query: str, max_results: int = 10, max_date: Optional[date] = None, 
-               search_type: str = "hybrid", min_date: Optional[date] = None) -> List[SearchResult]:
+    def search(self, query: str, max_results: int = 10, max_date: Optional[date] = None,
+               search_type: str = "hybrid", min_date: Optional[date] = None,
+               current_date: Optional[str] = None) -> List[SearchResult]:
+        del current_date  # accepted for interface compatibility, unused
         if not self._available:
             return []
         

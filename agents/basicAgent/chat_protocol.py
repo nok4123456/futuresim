@@ -28,11 +28,7 @@ class BasicChatProtocol:
             )
         if hasattr(self.inference, "enable_tools") and not bool(getattr(self.inference, "enable_tools", False)):
             raise RuntimeError(
-                "BasicAgent now requires chat tools. This vLLM run was started without "
-                "`vllm_enable_tools=true`."
-            )
-        raise RuntimeError(
-            f"BasicAgent could not enable chat tools for provider={provider_name}, model={model_name}."
+                f"BasicAgent could not enable chat tools for provider={provider_name}, model={model_name}."
         )
 
     def _call_chat_json(
@@ -190,9 +186,6 @@ class BasicChatProtocol:
     def _is_fatal_inference_failure(error: Exception) -> bool:
         msg = str(error).lower()
         fatal_markers = (
-            "vllm server died on port",
-            "vllm server failed to start",
-            "vllm server process died immediately",
             "engine core initialization failed",
             "cuda out of memory occurred when warming up sampler",
         )
@@ -205,5 +198,5 @@ class BasicChatProtocol:
         tools: List[Dict[str, Any]],
         sampling_params: Dict[str, Any],
     ) -> Dict[str, Any]:
-        # VLLMInference already retries transport failures internally.
+        # Inference providers retry transport failures internally.
         return self._call_chat_json(messages=messages, tools=tools, sampling_params=sampling_params)

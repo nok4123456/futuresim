@@ -112,7 +112,7 @@ def build_action_tools(
             _as_chat_function_tool(
                 name="search_news",
                 description=(
-                    "Search the news article database for evidence before submitting forecasts. "
+                    "Search news for real-time evidence before submitting forecasts. "
                     "Use at most one search per turn. "
                     f"{search_results_description} "
                     "You may optionally pass YYYY-MM-DD date filters; to_date cannot be after "

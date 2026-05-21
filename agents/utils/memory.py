@@ -82,7 +82,7 @@ class BasicMemory:
                 continue
         
         if most_recent:
-            self._content = most_recent.read_text().strip()
+            self._content = most_recent.read_text(encoding='utf-8').strip()
     
     def get(self) -> str:
         """Get current memory content."""
@@ -105,7 +105,7 @@ class BasicMemory:
             
         self._memory_dir.mkdir(parents=True, exist_ok=True)
         memory_path = self._memory_dir / f"{save_date}.txt"
-        memory_path.write_text(self._content)
+        memory_path.write_text(self._content, encoding='utf-8')
     
     def __bool__(self) -> bool:
         """Check if memory has content."""
@@ -171,7 +171,7 @@ class StructuredMemory:
 
         most_recent_txt = self._find_most_recent(current_date, "*.txt")
         if most_recent_txt:
-            txt_content = most_recent_txt.read_text().strip()
+            txt_content = most_recent_txt.read_text(encoding='utf-8').strip()
             file_date = date.fromisoformat(most_recent_txt.stem)
             self._entries = self._migrate_txt(txt_content, str(file_date))
 
@@ -323,12 +323,12 @@ class StructuredMemory:
         self._memory_dir.mkdir(parents=True, exist_ok=True)
         path = self._memory_dir / f"{save_date}.yaml"
         data = [asdict(e) for e in self._entries]
-        path.write_text(yaml.safe_dump(data, default_flow_style=False, allow_unicode=True))
+        path.write_text(yaml.safe_dump(data, default_flow_style=False, allow_unicode=True), encoding='utf-8')
 
     def _load_yaml(self, path: Path) -> List[MemoryEntry]:
         """Load entries from a YAML file."""
         try:
-            data = yaml.safe_load(path.read_text())
+            data = yaml.safe_load(path.read_text(encoding='utf-8'))
             if not isinstance(data, list):
                 return []
             return self._parse_entry_list(data)
@@ -730,7 +730,7 @@ class ActiveMemory:
         # Save meta-insights YAML
         yaml_path = date_dir / "meta.yaml"
         data = [asdict(e) for e in self._meta._entries]
-        yaml_path.write_text(yaml.safe_dump(data, default_flow_style=False, allow_unicode=True))
+        yaml_path.write_text(yaml.safe_dump(data, default_flow_style=False, allow_unicode=True), encoding='utf-8')
 
     def _save(self, save_date: Optional[date] = None) -> None:
         """Alias for save(), for compatibility with _run_memory_update_loop."""

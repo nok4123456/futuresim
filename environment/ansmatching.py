@@ -612,7 +612,7 @@ class AnswerMatcher:
         """Extract the model name from the inference provider."""
         if hasattr(self.inference, 'model'):
             return self.inference.model
-        return "deepseek/deepseek-v3.2"
+        return "deepseek-chat"
 
     def find_match(self, candidate: str, existing_outcomes: List[str],
                    question_id: str = None, question_title: str = None) -> Optional[str]:

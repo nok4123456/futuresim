@@ -45,9 +45,6 @@ class AllQAgent(BasicAgent):
         """Detect inference failures that should abort the run immediately."""
         msg = str(error).lower()
         fatal_markers = (
-            "vllm server died on port",
-            "vllm server failed to start",
-            "vllm server process died immediately",
             "engine core initialization failed",
             "cuda out of memory occurred when warming up sampler",
         )
@@ -145,41 +142,6 @@ Requirements:
         # Set agent context so submissions are recorded correctly
         forecast_interface.current_agent_id = self.agent_id
 
-        # Critical for local vLLM: start the agent server ONCE before fanning out
-        # to many threads. Otherwise, thread-level failures/timeouts can lead to
-        # repeated server start attempts and instability.
-        from inference.vllm import VLLMInference
-        if isinstance(self.inference, VLLMInference):
-            print(f"[{self.agent_id}] Warming up agent vLLM server before parallel warmup...")
-            # Fail fast: do not fan out 64 warmup threads until a real generation succeeds.
-            probe_messages = [{"role": "user", "content": "ping"}]
-            probe_params = {"temperature": 0.0, "max_tokens": 1}
-            probe_response = ""
-            for attempt in range(3):
-                try:
-                    probe_response, _ = self.inference.chat(probe_messages, probe_params)
-                except Exception as e:
-                    if attempt < 2:
-                        print(
-                            f"[{self.agent_id}] Initial vLLM probe failed; retrying ({attempt + 1}/3): {e}",
-                            flush=True,
-                        )
-                        time.sleep(5)
-                        continue
-                    raise
-                if probe_response and probe_response.strip():
-                    break
-                if attempt < 2:
-                    print(
-                        f"[{self.agent_id}] Initial vLLM probe returned empty output; retrying ({attempt + 1}/3)...",
-                        flush=True,
-                    )
-                    time.sleep(5)
-            if not probe_response or not probe_response.strip():
-                raise RuntimeError(
-                    "Initial vLLM warmup probe failed; aborting before parallel warmup."
-                )
-        
         # Parallel execution for warmup
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
@@ -775,14 +737,6 @@ class AllQDailyAgent(AllQAgent):
 
         # Ensure submissions/logs are tagged correctly
         forecast_interface.current_agent_id = self.agent_id
-
-        # Start the agent server before parallelizing across questions (same rationale
-        # as AllQ warmup).
-        from inference.vllm import VLLMInference
-        if isinstance(self.inference, VLLMInference):
-            print(f"[{self.agent_id}] Warming up agent vLLM server before parallel allqd...")
-            # Fail fast: if startup/warmup fails, abort instead of wasting the whole day loop.
-            self.inference.chat([{"role": "user", "content": "ping"}], {"temperature": 0.0, "max_tokens": 1})
 
         # Parallel execution across questions
         from concurrent.futures import ThreadPoolExecutor, as_completed

@@ -2,27 +2,14 @@
 """
 Run Futuresim from a config file or CLI arguments.
 
-Usage (Search agent with OpenRouter + vLLM matcher):
+Usage (Single agent with DeepSeek):
     python scripts/run_forecast_sim.py \\
-        --sim_name search_agent_run \\
-        --provider openrouter \\
-        --openrouter_model xiaomi/mimo-v2-flash:free \\
-        --matching vllm \\
-        --matcher "$FSIM_MATCHER_MODEL" \\
-        --search_db "$FSIM_SEARCH_DB" \\
-        --embedding_model "$FSIM_EMBEDDING_MODEL" \\
-        --embedding_gpu_mem 0.4 \\
-        --matcher_gpu_mem 0.3 \\
+        --provider deepseek --deepseek_model deepseek-chat \\
         --start_date 2024-12-25 --end_date 2024-12-27
 
-Usage (No-search baseline):
+Usage (Single agent with OpenRouter):
     python scripts/run_forecast_sim.py \\
-        --sim_name no_search_baseline \\
-        --provider openrouter \\
-        --openrouter_model xiaomi/mimo-v2-flash:free \\
-        --matching vllm \\
-        --matcher "$FSIM_MATCHER_MODEL" \\
-        --matcher_gpu_mem 0.5 \\
+        --provider openrouter --openrouter_model xiaomi/mimo-v2-flash:free \\
         --start_date 2024-12-25 --end_date 2024-12-27
 
 Usage (Multi-agent - config file):
@@ -52,15 +39,9 @@ from agents.qwenAgent import QwenBasicAgent, QwenAllQAgent
 # Default paths
 DATASET_PATH = os.getenv("FSIM_DATASET_PATH", "nikhilchandak/OpenForesight")
 DATASET_CACHE = os.getenv("FSIM_DATASET_CACHE", str(REPO_ROOT / ".cache" / "hf_datasets"))
-MODEL_PATH = os.getenv("FSIM_DEFAULT_MODEL_PATH", "")
 CURRENT_SIM_DIR = os.getenv("FSIM_OUTPUT_BASE", str(REPO_ROOT / "logs" / "current_sim"))
-MATCHER_PATH = os.getenv("FSIM_MATCHER_MODEL", MODEL_PATH)
-EMBEDDING_MODEL_PATH = os.getenv("FSIM_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
-
-
-class ThreadSafeLLM:
-    """Deprecated: embedding is now served via vLLM OpenAI server (see below)."""
-    pass
+MATCHER_PATH = os.getenv("FSIM_MATCHER_MODEL", "deepseek-chat")
+EMBEDDING_MODEL_PATH = os.getenv("FSIM_EMBEDDING_MODEL", "")
 
 
 def create_output_dir(sim_name: str, base_dir: str = CURRENT_SIM_DIR) -> str:
@@ -269,34 +250,7 @@ def load_agents_config(config_path: str) -> dict:
 
 def create_inference_provider(provider: str, model: str, args, openrouter_provider_order=None, openrouter_provider=None):
     """Create an inference provider instance."""
-    if provider == "vllm":
-        from inference.vllm import VLLMInference
-        rope_scaling = getattr(args, "rope_scaling", None)
-        agent_max_model_len = getattr(args, "agent_max_model_len", None)
-        if agent_max_model_len is None:
-            agent_max_model_len = args.max_model_len
-        tool_call_parser = _resolve_vllm_tool_call_parser(model, args)
-        return VLLMInference(
-            model,
-            max_model_len=agent_max_model_len,
-            gpu_memory_utilization=getattr(args, "vllm_gpu_mem", 0.3),
-            timeout=getattr(args, "vllm_request_timeout", 120.0),
-            max_num_seqs=getattr(args, "vllm_max_num_seqs", 8),
-            tensor_parallel_size=getattr(args, "vllm_tensor_parallel_size", 1),
-            data_parallel_size=getattr(args, "vllm_data_parallel_size", 1),
-            pipeline_parallel_size=getattr(args, "vllm_pipeline_parallel_size", 1),
-            enable_expert_parallel=getattr(args, "vllm_enable_expert_parallel", False),
-            all2all_backend=getattr(args, "vllm_all2all_backend", None),
-            startup_timeout=getattr(args, "vllm_startup_timeout", 300.0),
-            rope_scaling=rope_scaling,
-            enable_tools=getattr(args, "vllm_enable_tools", False),
-            tool_call_parser=tool_call_parser,
-            tool_parser_plugin=getattr(args, "vllm_tool_parser_plugin", None),
-            enable_prefix_caching=getattr(args, "vllm_enable_prefix_caching", True),
-            cuda_visible_devices=getattr(args, "agent_cuda_visible_devices", None),
-            language_model_only=getattr(args, "language_model_only", False),
-        )
-    elif provider == "openrouter":
+    if provider == "openrouter":
         from inference.openrouter import OpenRouterInference
         kwargs = {}
         provider_cfg = dict(openrouter_provider) if openrouter_provider else {}
@@ -306,6 +260,9 @@ def create_inference_provider(provider: str, model: str, args, openrouter_provid
         if provider_cfg:
             kwargs["provider"] = provider_cfg
         return OpenRouterInference(model, **kwargs)
+    elif provider == "deepseek":
+        from inference.deepseek import DeepSeekInference
+        return DeepSeekInference(model)
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -320,35 +277,6 @@ def get_model_short_name(model: str) -> str:
     # Remove version tags
     name = name.split(':')[0]
     return name
-
-
-def _is_qwen_model(model: str) -> bool:
-    model_l = str(model or "").lower()
-    return "qwen" in model_l
-
-
-def _is_qwen35_model(model: str) -> bool:
-    model_l = str(model or "").lower()
-    return ("qwen3.5" in model_l) or ("qwen3_5" in model_l)
-
-
-def _resolve_vllm_tool_call_parser(model: str, args) -> str | None:
-    parser = getattr(args, "vllm_tool_call_parser", None)
-    if isinstance(parser, str):
-        parser = parser.strip()
-    if parser:
-        return parser
-
-    if not bool(getattr(args, "vllm_enable_tools", False)):
-        return None
-
-    if _is_qwen35_model(model):
-        return "qwen3_coder"
-
-    if _is_qwen_model(model):
-        return "hermes"
-
-    return "openai"
 
 
 def create_agents_from_config(config: dict, args, output_dir: str, search_tool=None) -> list:
@@ -767,27 +695,20 @@ def main():
     # Single-agent settings (used when no config file)
     parser.add_argument("--scaffold", choices=["basic", "allQ", "allq", "allqd", "qwenbasic", "qwenallq", "minimalHarness"], default="basic",
                        help="Agent scaffold to use (default: basic). Qwen wrappers are available as qwenbasic/qwenallq.")
-    parser.add_argument("--provider", choices=["vllm", "openrouter"], default="openrouter",
-                       help="Inference provider: 'vllm' (local) or 'openrouter' (API)")
-    parser.add_argument("--model_path", default=MODEL_PATH,
-                       help="Path to model for VLLM inference")
+    parser.add_argument("--provider", choices=["openrouter", "deepseek"], default="openrouter",
+                       help="Inference provider: 'openrouter' (API) or 'deepseek' (API)")
     parser.add_argument("--openrouter_model", default=None,
                        help="Model ID for OpenRouter (e.g., 'xiaomi/mimo-v2-flash:free'). "
                             "Ignored when agents are configured via YAML.")
-    parser.add_argument("--max_model_len", type=int, default=32768,
-                       help="Max context length for VLLM (default 32768)")
-    parser.add_argument("--agent_max_model_len", type=int, default=None,
-                       help="Max context length for agent vLLM only (defaults to --max_model_len)")
-    parser.add_argument("--matcher_max_model_len", type=int, default=None,
-                       help="Max context length for matcher vLLM only (defaults to --max_model_len)")
-    parser.add_argument("--embedding_max_model_len", type=int, default=None,
-                       help="Max context length for embedding vLLM only (defaults to --max_model_len)")
+    parser.add_argument("--deepseek_model", default=None,
+                       help="Model ID for DeepSeek (e.g., 'deepseek-chat', 'deepseek-reasoner'). "
+                            "Ignored when agents are configured via YAML.")
     parser.add_argument("--no_inference", action="store_true",
                        help="Run without LLM (for testing setup)")
     
     # Agent settings
-    parser.add_argument("--max_actions", type=int, default=None,
-                       help="Optional action budget per day (queries + submissions)")
+    parser.add_argument("--max_actions", type=int, default=10,
+                       help="Action budget per day — queries + submissions (default 10)")
     parser.add_argument("--warmup_max_actions", type=int, default=None,
                        help="Optional action budget per question during warmup phase (AllQAgent only)")
     parser.add_argument("--max_total_tokens", type=int, default=None,
@@ -810,62 +731,23 @@ def main():
                        help="Sampling temperature")
     parser.add_argument("--max_tokens", type=int, default=2048,
                        help="Max output tokens to generate per LLM call")
-    # vLLM runtime settings (when provider == vllm in config)
-    parser.add_argument("--vllm_gpu_mem", type=float, default=0.3,
-                       help="GPU memory fraction for vLLM agent models (0.0-1.0, default 0.3)")
-    parser.add_argument("--vllm_max_num_seqs", type=int, default=8,
-                       help="vLLM max concurrent sequences (default 8)")
-    parser.add_argument("--vllm_tensor_parallel_size", type=int, default=1,
-                       help="Tensor parallel size for vLLM agent models (default 1)")
-    parser.add_argument("--vllm_data_parallel_size", type=int, default=1,
-                       help="Data parallel size for vLLM agent models (default 1)")
-    parser.add_argument("--vllm_pipeline_parallel_size", type=int, default=1,
-                       help="Pipeline parallel size for vLLM agent models (default 1)")
-    parser.add_argument("--vllm_enable_expert_parallel", action="store_true", default=False,
-                       help="Enable vLLM expert parallel mode for MoE models")
-    parser.add_argument("--vllm_all2all_backend", default=None,
-                       help="Optional vLLM all-to-all backend (e.g. allgather_reducescatter, deepep_high_throughput)")
-    parser.add_argument("--vllm_startup_timeout", type=float, default=300.0,
-                       help="vLLM server startup timeout in seconds (default 300)")
-    parser.add_argument("--vllm_request_timeout", type=float, default=120.0,
-                       help="vLLM request timeout in seconds for chat/embeddings calls (default 120)")
-    parser.add_argument("--vllm_enable_tools", action="store_true", default=False,
-                       help="Start vLLM servers with tool-calling enabled")
-    parser.add_argument("--vllm_enable_prefix_caching", action=argparse.BooleanOptionalAction, default=True,
-                       help="Enable vLLM automatic prefix caching for chat/matcher servers (default: on)")
-    parser.add_argument("--vllm_tool_call_parser", default=None,
-                       help="vLLM tool parser name (e.g. qwen3_coder, openai). Auto-detected when omitted.")
-    parser.add_argument("--vllm_tool_parser_plugin", default=None,
-                       help="Optional --tool-parser-plugin value for custom parsers")
-    parser.add_argument("--language_model_only", action="store_true", default=False,
-                       help="Pass --language-model-only to vLLM (skip vision encoder for multimodal checkpoints)")
-
-    # GPU pinning for local multi-GPU runs.
-    # If you set aux_cuda_visible_devices=1 and agent_cuda_visible_devices=0, then:
-    # - matcher vLLM subprocess + in-process embedder will use GPU 1 (parent process visibility)
-    # - agent vLLM subprocesses will be pinned to GPU 0 (per-subprocess override)
-    parser.add_argument("--aux_cuda_visible_devices", default=None,
-                       help="CUDA_VISIBLE_DEVICES for matcher + embedder (parent process). E.g. '1'")
-    parser.add_argument("--agent_cuda_visible_devices", default=None,
-                       help="CUDA_VISIBLE_DEVICES for agent vLLM subprocesses. E.g. '0'")
-    
     # Answer matching settings
-    parser.add_argument("--matching", choices=["exact", "openrouter", "vllm"], default="vllm",
-                       help="Answer matching mode: 'exact', 'openrouter', or 'vllm'")
+    parser.add_argument("--matching", choices=["exact", "openrouter", "deepseek"], default="exact",
+                       help="Answer matching mode: 'exact' (no API), 'openrouter', or 'deepseek'")
     parser.add_argument("--matcher", default=MATCHER_PATH,
-                       help="Matcher model: OpenRouter model ID or VLLM model path")
+                       help="Matcher model: OpenRouter or DeepSeek model ID")
     parser.add_argument("--matcher_max_concurrency", type=int, default=300,
                        help="Max concurrent OpenRouter answer-matcher requests during cache warmup (default 300)")
     
     # Search settings
     parser.add_argument("--search_db", default="",
                        help="Path to LanceDB directory for article search (optional)")
+    parser.add_argument("--search_tool_type", default="",
+                       choices=["", "lancedb", "google"],
+                       help="Search tool backend (default: lancedb if --search_db is set). "
+                            "Overridden by FSIM_SEARCH_TOOL env var.")
     parser.add_argument("--embedding_model", default=EMBEDDING_MODEL_PATH,
                        help="Path to embedding model for semantic search")
-    parser.add_argument("--embedding_gpu_mem", type=float, default=0.4,
-                       help="GPU memory fraction for embedding model (0.0-1.0, default 0.4)")
-    parser.add_argument("--matcher_gpu_mem", type=float, default=0.3,
-                       help="GPU memory fraction for matcher model (0.0-1.0, default 0.3)")
     parser.add_argument("--search_cutoff_days", type=int, default=0,
                        help="Days before current date to cutoff search results (default 0)")
     # Config file
@@ -950,80 +832,6 @@ def main():
         if hasattr(args, key):
             setattr(args, key, _normalize_date_like(getattr(args, key)))
 
-    def _config_uses_vllm(cfg: dict | None, parsed_args: argparse.Namespace) -> bool:
-        # Legacy single-agent mode.
-        if getattr(parsed_args, "provider", None) == "vllm":
-            return True
-        if not cfg:
-            return False
-
-        defaults = cfg.get("defaults", {}) or {}
-        default_provider = defaults.get("provider")
-        for a in (cfg.get("agents") or []):
-            p = a.get("provider", default_provider)
-            if p == "vllm":
-                return True
-        return default_provider == "vllm"
-
-    # Apply GPU pinning BEFORE starting matcher server or loading embedding model.
-    #
-    # Some schedulers set CUDA_VISIBLE_DEVICES to an allocated subset
-    # (sometimes UUIDs). We interpret numeric specs like "0"/"1"
-    # as indices into that *current* visible list, and rewrite them to the actual
-    # entry (index or UUID) to avoid pinning to non-allocated GPUs.
-    orig_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    base_visible = None
-    if orig_visible:
-        base_visible = [x.strip() for x in orig_visible.split(",") if x.strip()]
-
-    def _map_cuda_spec(spec: str | None) -> str | None:
-        if spec is None:
-            return None
-        s = str(spec).strip()
-        if not s:
-            return None
-        if base_visible is not None:
-            # Support comma-separated index lists like "0,1" for tensor-parallel runs.
-            parts = [p.strip() for p in s.split(",") if p.strip()]
-            if parts and all(p.isdigit() for p in parts):
-                mapped = []
-                for p in parts:
-                    idx = int(p)
-                    if not (0 <= idx < len(base_visible)):
-                        return None
-                    mapped.append(base_visible[idx])
-                return ",".join(mapped)
-        return s
-
-    aux_mapped = _map_cuda_spec(getattr(args, "aux_cuda_visible_devices", None))
-    agent_mapped = _map_cuda_spec(getattr(args, "agent_cuda_visible_devices", None))
-
-    if getattr(args, "aux_cuda_visible_devices", None) is not None and aux_mapped is None:
-        print(
-            f"Warning: aux_cuda_visible_devices={args.aux_cuda_visible_devices!r} not compatible with "
-            f"CUDA_VISIBLE_DEVICES={orig_visible!r}; ignoring aux pinning."
-        )
-    if getattr(args, "agent_cuda_visible_devices", None) is not None and agent_mapped is None:
-        print(
-            f"Warning: agent_cuda_visible_devices={args.agent_cuda_visible_devices!r} not compatible with "
-            f"CUDA_VISIBLE_DEVICES={orig_visible!r}; ignoring agent pinning."
-        )
-
-    args.aux_cuda_visible_devices = aux_mapped
-    args.agent_cuda_visible_devices = agent_mapped
-
-    # Only apply agent pinning if we will actually start vLLM agent servers.
-    if args.agent_cuda_visible_devices and not _config_uses_vllm(config, args):
-        print(
-            "Warning: agent_cuda_visible_devices was set but no agent is configured with provider=vllm; "
-            "ignoring agent pinning."
-        )
-        args.agent_cuda_visible_devices = None
-
-    # This ensures the in-process embedding model lands on aux GPU deterministically.
-    if args.aux_cuda_visible_devices:
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.aux_cuda_visible_devices)
-    
     # Handle parallel flag
     if args.no_parallel:
         args.parallel = False
@@ -1145,28 +953,7 @@ def main():
     
     matcher_provider = None
     
-    if args.matching == "vllm":
-        print(f"\nInitializing VLLM matcher server (must start before embedding model)...")
-        from inference.vllm import VLLMInference
-        matcher_rope_scaling = getattr(args, "matcher_rope_scaling", None)
-        if matcher_rope_scaling is None:
-            matcher_rope_scaling = getattr(args, "rope_scaling", None)
-        matcher_max_model_len = getattr(args, "matcher_max_model_len", None)
-        if matcher_max_model_len is None:
-            matcher_max_model_len = args.max_model_len
-        matcher_provider = VLLMInference(args.matcher, max_model_len=matcher_max_model_len, 
-                                          gpu_memory_utilization=args.matcher_gpu_mem,
-                                          timeout=getattr(args, "vllm_request_timeout", 120.0),
-                                          max_num_seqs=getattr(args, "vllm_max_num_seqs", 8),
-                                          startup_timeout=getattr(args, "vllm_startup_timeout", 300.0),
-                                          rope_scaling=matcher_rope_scaling,
-                                          enable_prefix_caching=getattr(args, "vllm_enable_prefix_caching", True),
-                                          cuda_visible_devices=getattr(args, "aux_cuda_visible_devices", None))
-        # Force server startup by making a warmup call - fail job if this fails
-        print(f"  Warming up matcher ({args.matcher}, GPU: {args.matcher_gpu_mem:.0%})...")
-        matcher_provider.chat([{"role": "user", "content": "test"}], {"temperature": 0, "max_tokens": 1})
-        print(f"  Matcher server ready!")
-    elif args.matching == "openrouter":
+    if args.matching == "openrouter":
         from inference.openrouter import OpenRouterInference
         matcher_kwargs = {}
         matcher_prov_order = getattr(args, "matcher_openrouter_provider_order", None)
@@ -1174,6 +961,10 @@ def main():
             matcher_kwargs["provider"] = {"order": matcher_prov_order, "allow_fallbacks": True}
         matcher_provider = OpenRouterInference(args.matcher, **matcher_kwargs)
         print(f"Answer matching: OpenRouter with {args.matcher}")
+    elif args.matching == "deepseek":
+        from inference.deepseek import DeepSeekInference
+        matcher_provider = DeepSeekInference(args.matcher)
+        print(f"Answer matching: DeepSeek with {args.matcher}")
     elif args.matching == "exact":
         print(f"Answer matching: exact (normalized string comparison)")
     else:
@@ -1182,53 +973,23 @@ def main():
     # Setup search tool if specified (preload embedding model)
     # Note: This comes AFTER matcher server is initialized
     search_tool = None
-    if args.search_db:
+    if args.search_db or os.environ.get("FSIM_SEARCH_TOOL", "").strip().lower() == "google":
         print(f"\nSetting up search tool...", flush=True)
-        from agents.search_tools.lancedb import LanceDBSearchTool
-        
-        # Preload embedding model for zero-latency searches
+        from agents.search_tools import create_search_tool
+
+        # Embedding model must be provided externally (e.g. via FSIM_EMBEDDING_URL)
+        # when using semantic/hybrid search with LanceDB.
         embedding_model = None
         if args.embedding_model and os.path.exists(args.embedding_model):
-            print(f"  Loading embedding model: {args.embedding_model} (GPU: {args.embedding_gpu_mem:.0%})")
-            try:
-                from inference.vllm import VLLMInference
-                embedding_rope_scaling = getattr(args, "embedding_rope_scaling", None)
-                if embedding_rope_scaling is None:
-                    embedding_rope_scaling = getattr(args, "rope_scaling", None)
-                embedding_max_model_len = getattr(args, "embedding_max_model_len", None)
-                if embedding_max_model_len is None:
-                    embedding_max_model_len = args.max_model_len
-                embedding_model = VLLMInference(
-                    args.embedding_model,
-                    max_model_len=embedding_max_model_len,
-                    gpu_memory_utilization=args.embedding_gpu_mem,
-                    timeout=getattr(args, "vllm_request_timeout", 120.0),
-                    max_num_seqs=getattr(args, "vllm_max_num_seqs", 8),
-                    startup_timeout=getattr(args, "vllm_startup_timeout", 300.0),
-                    rope_scaling=embedding_rope_scaling,
-                    enable_prefix_caching=False,
-                    cuda_visible_devices=getattr(args, "aux_cuda_visible_devices", None),
-                )
-                # Force server startup and verify /v1/embeddings works.
-                warm = embedding_model.embed(["test"], use_tqdm=False)
-                if not warm:
-                    raise RuntimeError("Embedding warmup returned empty result")
-                # Publish the actual URL so child agents (esp. parallel sims with
-                # multiple vLLMs on the host) don't have to scan port ranges and
-                # can deterministically pick the right embedding server.
-                if getattr(embedding_model, "_port", None):
-                    os.environ["FSIM_EMBEDDING_URL"] = f"http://127.0.0.1:{embedding_model._port}"
-                print("  Embedding server ready (queries will use semantic/hybrid search)")
-            except Exception as e:
-                print(f"  Warning: Failed to start embedding server: {e}")
-                print("  Falling back to keyword-only search")
-        
-        search_tool = LanceDBSearchTool(args.search_db, embedding_model=embedding_model)
-        if search_tool.is_available:
-            print(f"  LanceDB connected: {args.search_db}")
-        else:
-            print(f"  Warning: LanceDB not available at {args.search_db}")
-            search_tool = None
+            print(f"  Note: embedding_model path exists but no local vllm server available.")
+            print(f"  Set FSIM_EMBEDDING_URL to use an external embedding server.")
+
+        search_tool_type = getattr(args, 'search_tool_type', '') or ''
+        search_tool = create_search_tool(
+            search_db=args.search_db,
+            embedding_model=embedding_model,
+            search_tool_type=search_tool_type,
+        )
     
     # Determine agents to create
     agents = []
@@ -1264,35 +1025,7 @@ def main():
         from inference.openrouter import GlobalRateLimiter
         GlobalRateLimiter.configure(args.rate_limit)
         
-        if args.provider == "vllm":
-            from inference.vllm import VLLMInference
-            agent_max_model_len = getattr(args, "agent_max_model_len", None)
-            if agent_max_model_len is None:
-                agent_max_model_len = args.max_model_len
-            print(f"Loading VLLM model: {args.model_path} (max_model_len={agent_max_model_len})")
-            inference_provider = VLLMInference(
-                args.model_path,
-                max_model_len=agent_max_model_len,
-                gpu_memory_utilization=getattr(args, "vllm_gpu_mem", 0.3),
-                timeout=getattr(args, "vllm_request_timeout", 120.0),
-                max_num_seqs=getattr(args, "vllm_max_num_seqs", 8),
-                tensor_parallel_size=getattr(args, "vllm_tensor_parallel_size", 1),
-                data_parallel_size=getattr(args, "vllm_data_parallel_size", 1),
-                pipeline_parallel_size=getattr(args, "vllm_pipeline_parallel_size", 1),
-                enable_expert_parallel=getattr(args, "vllm_enable_expert_parallel", False),
-                all2all_backend=getattr(args, "vllm_all2all_backend", None),
-                startup_timeout=getattr(args, "vllm_startup_timeout", 300.0),
-                rope_scaling=getattr(args, "rope_scaling", None),
-                enable_tools=getattr(args, "vllm_enable_tools", False),
-                tool_call_parser=_resolve_vllm_tool_call_parser(args.model_path, args),
-                tool_parser_plugin=getattr(args, "vllm_tool_parser_plugin", None),
-                enable_prefix_caching=getattr(args, "vllm_enable_prefix_caching", True),
-                cuda_visible_devices=getattr(args, "agent_cuda_visible_devices", None),
-                language_model_only=getattr(args, "language_model_only", False),
-            )
-            model_name = os.path.basename(args.model_path)
-            
-        elif args.provider == "openrouter":
+        if args.provider == "openrouter":
             from inference.openrouter import OpenRouterInference
             if not args.openrouter_model:
                 print("Error: --openrouter_model is required in single-agent mode with --provider openrouter")
@@ -1307,7 +1040,16 @@ def main():
             print(f"Using OpenRouter model: {args.openrouter_model}")
             inference_provider = OpenRouterInference(args.openrouter_model)
             model_name = args.openrouter_model
-        
+
+        elif args.provider == "deepseek":
+            from inference.deepseek import DeepSeekInference
+            if not args.deepseek_model:
+                print("Error: --deepseek_model is required in single-agent mode with --provider deepseek")
+                sys.exit(1)
+            print(f"Using DeepSeek model: {args.deepseek_model}")
+            inference_provider = DeepSeekInference(args.deepseek_model)
+            model_name = args.deepseek_model
+
         # Create agent
         model_short = get_model_short_name(model_name)
         agent_id = f"basic_{model_short}_001"

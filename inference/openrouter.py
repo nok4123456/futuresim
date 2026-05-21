@@ -1,7 +1,7 @@
 """
 OpenRouter inference provider.
 
-Drop-in replacement for VLLMInference. Exposes chat() and chat_json() with the
+OpenRouter API inference provider. Exposes chat() and chat_json() with the
 same provider-facing interface used by the agents.
 """
 
@@ -159,7 +159,7 @@ class OpenRouterInference:
             **kwargs: Additional default parameters for requests
         """
         self.model = model
-        self.model_name = model  # For compatibility with VLLM interface
+        self.model_name = model  # For compatibility with provider interface
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
         
         if not self.api_key:

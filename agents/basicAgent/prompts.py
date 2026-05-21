@@ -42,12 +42,10 @@ class BasicPromptBuilder:
 
     def _search_results_description(self) -> str:
         chunk_tokens = self._search_handler.chunk_tokens
-        extra_info = "The search tool uses a hybrid approach to retrieve articles, combining both semantic similarity (through an embedding model) and keyword matching."
-        if chunk_tokens is None:
-            return f"You have access to a search tool that returns up to {self.config.max_search_results} retrieved article chunks. {extra_info}"
+        tool_type = type(self._search_handler._search_tool).__name__ if self._search_handler._search_tool else "News"
         return (
-            f"You have access to a search tool that returns up to {self.config.max_search_results} retrieved article chunks, "
-            f"each roughly {chunk_tokens} tokens long. {extra_info}"
+            f"Returns up to {self.config.max_search_results} news article results "
+            f"(title, source, date, snippet, and URL for each)."
         )
 
     def _get_timegap_days(self) -> int:
@@ -311,11 +309,12 @@ Use the reasoning and insights above to inform today's forecasts.
                 cutoff_date = current_date - timedelta(days=self.config.search_cutoff_days)
                 cutoff_desc = f"{cutoff_date} (today - {self.config.search_cutoff_days} days)"
             search_tool_line = (
-                "- `search_news(query, from_date?, to_date?)`: search the news corpus for evidence. "
+                "- `search_news(query, from_date?, to_date?)`: search news for evidence. "
                 f"`to_date` is capped at {cutoff_desc}. {self._search_results_description()}\n"
             )
             search_advice = (
-                f"You have access to a news article database which is updated **daily** through a search tool, that you can use to find evidence for your forecasts."
+                "You have access to a news search tool that you can use to find "
+                "real-time evidence for your forecasts."
             )
 
         memory_tools_section = ""

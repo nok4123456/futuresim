@@ -59,11 +59,10 @@ class LanceDBSearchTool(BaseSearchTool):
         
         if self._model_path:
             try:
-                from vllm import LLM
-                print(f"[LanceDB] Loading embedding model from {self._model_path}...")
-                self._embedding_model = LLM(model=self._model_path, convert="embed")
-                self._model_loaded = True
-                print("[LanceDB] Embedding model loaded")
+                # Embedding model loading delegated to external server.
+                # Set FSIM_EMBEDDING_URL to point to an embedding server.
+                print(f"[LanceDB] Note: local embedding loading removed. "
+                      f"Model path was: {self._model_path}")
             except Exception as e:
                 print(f"[LanceDB] Failed to load embedding model: {e}")
     

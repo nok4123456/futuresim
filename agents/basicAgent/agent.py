@@ -198,6 +198,12 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
             current_date=current_date,
         )
 
+        # If --daily_submit is set and no prediction was made today, force one.
+        if self.config.daily_submit and not all_forecasts:
+            forced = self._force_daily_submit(messages, forecast_interface, current_date)
+            if forced:
+                all_forecasts.extend(forced)
+
         # If the unified loop did not complete an in-loop memory phase, fall back
         # to the explicit end-of-day memory update. This keeps structured/active
         # memory working even when max_total_tokens is unset.
@@ -826,6 +832,84 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
     def _flush_warmup_raw_logs(self) -> None:
         self._output_logger.flush_warmup_raw()
     
+    # =========================================================================
+    # Forced daily submit
+    # =========================================================================
+
+    def _force_daily_submit(
+        self,
+        messages: List[Dict[str, Any]],
+        forecast_interface,
+        current_date: date,
+    ) -> List[Dict[str, Any]]:
+        """Inject a forced-submit prompt when no prediction was made today."""
+        resolved_qids = {q.qid for q in getattr(forecast_interface, 'resolved_questions', [])}
+        active_questions = [
+            q for q in forecast_interface.questions.values()
+            if q.qid not in resolved_qids
+        ]
+        if not active_questions:
+            return []
+
+        # Pick a question — prefer ones with nearer resolution
+        active_questions.sort(key=lambda q: getattr(q, 'resolution_date', date.max))
+        target = active_questions[0]
+
+        from .tools import build_action_tools
+        tools = build_action_tools(
+            enable_query=False,
+            enable_search=False,
+            max_outcomes_per_question=self.config.max_outcomes_per_question,
+            max_search_results=self.config.max_search_results,
+            search_chunk_tokens=0,
+        )
+        # Keep only submit_forecasts
+        tools = [t for t in tools if t.get("function", {}).get("name") == "submit_forecasts"]
+        if not tools:
+            return []
+
+        prompt = (
+            f"DAILY SUBMIT REQUIRED: You have not submitted a prediction today "
+            f"({current_date.isoformat()}). "
+            f"You MUST call submit_forecasts NOW. No other tools are available. "
+            f"Submit your best probability estimate for this question:\n"
+            f"QID: {target.qid}\n"
+            f"Title: {target.title}\n"
+            f"Resolution: {target.resolution_date}"
+        )
+        messages.append({"role": "user", "content": prompt})
+
+        sampling_params = dict(self.config.sampling_params or {})
+        sampling_params["tool_choice"] = "auto"
+
+        try:
+            resp_json = self._call_chat_json_with_retries(
+                messages=messages, tools=tools, sampling_params=sampling_params,
+            )
+        except Exception as e:
+            print(f"  [{self.agent_id}] Forced daily submit failed: {e}")
+            return []
+
+        from .tools import chat_response_to_action, single_call_to_parsed_action
+        _parsed, _text, tool_calls = chat_response_to_action(resp_json)
+        assistant_message = extract_assistant_message(resp_json)
+        self._append_assistant_message(messages=messages, assistant_message=assistant_message)
+
+        forecasts = []
+        for tc in tool_calls:
+            tc_parsed, _ = single_call_to_parsed_action(tc)
+            if tc_parsed and tc_parsed.action_type == "submit":
+                fcasts = self._handle_submit(
+                    messages, forecast_interface, "", tc_parsed,
+                    self._create_budget_tracker(),
+                    qid=target.qid, tool_call=tc,
+                )
+                forecasts.extend(fcasts)
+
+        if forecasts:
+            print(f"  [{self.agent_id}] Forced daily submit: {len(forecasts)} prediction(s)")
+        return forecasts
+
     # =========================================================================
     # Memory Update Loop
     # =========================================================================

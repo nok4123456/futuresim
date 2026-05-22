@@ -75,17 +75,39 @@ class PolymarketClient:
 
     @staticmethod
     def search(query: str, limit: int = 10) -> List[dict]:
-        """Search for markets by keyword. Returns list of market summary dicts
-        (does NOT include outcomes/prices — use fetch_detail for those)."""
-        url = f"{GAMMA_API}/markets"
-        params = {"limit": limit, "closed": "false", "keyword": query}
+        """Search events by market_title, fetch event details, return markets."""
         try:
-            resp = requests.get(url, params=params, timeout=15)
+            resp = requests.get(f"{GAMMA_API}/events/similar",
+                                params={"market_title": query, "limit": min(limit, 20),
+                                        "closed": "false"}, timeout=15)
             resp.raise_for_status()
-            return resp.json()
+            events = resp.json()
         except requests.RequestException as e:
             print(f"[Polymarket] Search error: {e}")
             return []
+        if not events:
+            return []
+        markets: List[dict] = []
+        for ev in events[:limit]:
+            eid = ev.get("id")
+            if not eid:
+                continue
+            try:
+                er = requests.get(f"{GAMMA_API}/events/{eid}", timeout=15)
+                if er.status_code != 200:
+                    continue
+                detail = er.json()
+                for m in detail.get("markets") or []:
+                    if not m.get("endDate"):
+                        m["endDate"] = detail.get("endDate") or ev.get("endDate", "")
+                    markets.append(m)
+                    if len(markets) >= limit:
+                        break
+            except requests.RequestException:
+                continue
+            if len(markets) >= limit:
+                break
+        return markets
 
     @staticmethod
     def lookup_by_slug(slug: str) -> Optional[dict]:
@@ -135,13 +157,15 @@ class PolymarketClient:
         if slug:
             summary = PolymarketClient.lookup_by_slug(slug)
             if not summary:
-                print(f"[Polymarket] Market not found: {slug}")
-                return None
-            market_id = summary.get("id", "")
-            detail = PolymarketClient.fetch_detail(market_id) if market_id else None
-            market = detail or summary
-            print(f"[Polymarket] Loaded: {market.get('question', slug)}")
-            return market
+                print(f"[Polymarket] Slug not found: {slug}. Trying keyword search...")
+                search = slug.replace("-", " ")
+                slug = None  # fall through to search below
+            else:
+                market_id = summary.get("id", "")
+                detail = PolymarketClient.fetch_detail(market_id) if market_id else None
+                market = detail or summary
+                print(f"[Polymarket] Loaded: {market.get('question', slug)}")
+                return market
 
         if search:
             results = PolymarketClient.search(search, limit=10)
@@ -276,51 +300,30 @@ def run_futuresim(
     if no_inference:
         cmd.append("--no_inference")
     if force_submit:
-        cmd.extend([
-            "--force_submit_threshold_tokens", "0",
-            "--submit_reserve_tokens", "0",
-            "--max_total_tokens", "32000",
-        ])
+        cmd.extend(["--daily_submit"])
 
-    print(f"\n[Runner] Launching futuresim...")
-    print(f"[Runner] {' '.join(cmd)}")
-
+    print(f"\n[Runner] Launching...")
+    print("-" * 60)
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=run_timeout,
-        )
+        result = subprocess.run(cmd, cwd=str(REPO_ROOT),
+                                text=True, encoding="utf-8", timeout=run_timeout)
     except subprocess.TimeoutExpired:
-        print("[Runner] Error: Simulation timed out after 10 minutes.")
+        print("[Runner] Timed out.")
         return None
-    except FileNotFoundError:
-        print("[Runner] Error: Python executable or run_forecast_sim.py not found.")
-        return None
-
+    print("-" * 60)
     if result.returncode != 0:
-        print(f"[Runner] Simulation failed (exit code {result.returncode}).")
-        print(f"[Runner] STDERR:\n{result.stderr[-1000:]}")
+        print(f"[Runner] Failed (exit {result.returncode}).")
         return None
-
-    # Parse output directory from stdout
-    output_dir = None
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if "Output directory:" in line:
-            output_dir = line.split("Output directory:", 1)[-1].strip()
-        # Also capture the last few lines for the user
-    print(result.stdout[-500:])
-
-    if not output_dir or not os.path.isdir(output_dir):
-        print("[Runner] Could not determine output directory from simulation output.")
-        return None
-
-    print(f"[Runner] Output: {output_dir}")
-    return output_dir
+    # Find output directory in logs
+    log_base = REPO_ROOT / "logs" / "current_sim" / sim_name
+    if log_base.exists():
+        dirs = sorted(log_base.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        for d in dirs:
+            if d.is_dir() and (d / "config.json").exists():
+                print(f"[Runner] Output: {d}")
+                return str(d)
+    print("[Runner] Could not find output directory.")
+    return None
 
 
 # ---------------------------------------------------------------------------

@@ -47,6 +47,9 @@ class AgentConfig:
     # Allow the model to emit multiple tool calls per turn.
     parallel_tool_calls: bool = False
 
+    # Force at least one submission per simulation day
+    daily_submit: bool = False
+
     # Single agent mode - adjusts prompt to focus on accuracy only (no peer/market language)
     single_agent_mode: bool = True
 

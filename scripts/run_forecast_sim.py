@@ -519,6 +519,7 @@ def create_agents_from_config(config: dict, args, output_dir: str, search_tool=N
         resolution_guard = _optional_int(
             agent_def.get('resolution_guard', defaults.get('resolution_guard', getattr(args, 'resolution_guard', None)))
         )
+        daily_submit = bool(agent_def.get('daily_submit', defaults.get('daily_submit', getattr(args, 'daily_submit', False))))
         enable_memory = agent_def.get('enable_memory', defaults.get('enable_memory', True))
         memory_format = agent_def.get('memory_format', defaults.get('memory_format', 'structured'))
         memory_max_entries = int(agent_def.get('memory_max_entries', defaults.get('memory_max_entries', 500)))
@@ -577,6 +578,7 @@ def create_agents_from_config(config: dict, args, output_dir: str, search_tool=N
             },
             search_cutoff_days=search_cutoff_days,
             resolution_guard=resolution_guard,
+            daily_submit=daily_submit,
             timegap_days=getattr(args, 'timegap_days', 1),
             single_agent_mode=(len(agents_list) == 1),  # Adjust prompt for single-agent runs
         )
@@ -660,7 +662,9 @@ def main():
                        help="Days before first resolution to start simulation (default 7)")
     parser.add_argument("--resolution_guard", type=int, default=None,
                        help="Warmup-only per-question current/search date: resolution_date - resolution_guard days; replaces the shared warmup sim-day date when set")
-    
+    parser.add_argument("--daily_submit", action="store_true",
+                       help="Force the agent to submit at least one prediction per simulation day")
+
     # Data paths
     parser.add_argument("--dataset", default="openforesight",
                        choices=["openforesight", "custom"],
@@ -1083,6 +1087,7 @@ def main():
             },
             search_cutoff_days=args.search_cutoff_days,
             resolution_guard=args.resolution_guard,
+            daily_submit=args.daily_submit,
             timegap_days=args.timegap_days,
             single_agent_mode=True,  # Legacy CLI mode is always single-agent
         )

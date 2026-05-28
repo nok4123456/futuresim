@@ -62,6 +62,7 @@ def build_action_tools(
     search_chunk_tokens: Optional[int] = None,
     enable_memory: bool = False,
     enable_mem_df: bool = False,
+    search_tool_type: str = "news",
 ) -> List[Dict[str, Any]]:
     tools: List[Dict[str, Any]] = []
     extra_search_info = "The search tool uses a hybrid approach to retrieve articles, combining both semantic similarity (through an embedding model) and keyword matching." 
@@ -108,48 +109,84 @@ def build_action_tools(
         )
 
     if enable_search:
-        tools.append(
-            _as_chat_function_tool(
-                name="search_news",
-                description=(
-                    "Search news for real-time evidence before submitting forecasts. "
-                    "Use at most one search per turn. "
-                    f"{search_results_description} "
-                    "You may optionally pass YYYY-MM-DD date filters; to_date cannot be after "
-                    "today's date. "
-                    "Example: search for 'Fed rate cut 2026 inflation'."
-                ),
-                parameters={
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": (
-                                "News search query string. Focus on concrete entities, events, "
-                                "and evidence relevant to the target forecast."
-                            ),
+        if search_tool_type == "polymarket":
+            tools.append(
+                _as_chat_function_tool(
+                    name="search_news",
+                    description=(
+                        "Query Polymarket for real-time prediction-market odds and data. "
+                        "Use at most one search per turn. "
+                        f"{search_results_description} "
+                        "Pass a market slug (hyphenated name, e.g. "
+                        "'will-google-have-the-best-ai-model-at-the-end-of-may-2026') "
+                        "or keyword phrases (e.g. 'Fed rate hike') to find matching markets. "
+                        "Returns current outcome prices, volume, liquidity, and market URL "
+                        "for each market found."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": (
+                                    "Polymarket slug or keyword search string. Use concrete "
+                                    "market names or event keywords to find relevant prediction "
+                                    "markets."
+                                ),
+                            },
                         },
-                        "from_date": {
-                            "type": ["string", "null"],
-                            "description": (
-                                "Optional earliest date for articles (YYYY-MM-DD format ONLY, "
-                                "e.g. '2024-06-01'). Must be a valid date, not keywords."
-                            ),
-                        },
-                        "to_date": {
-                            "type": ["string", "null"],
-                            "description": (
-                                "Optional latest date for articles (YYYY-MM-DD format ONLY, "
-                                "e.g. '2025-03-15'). Must be a valid date, not keywords. "
-                                "Cannot be after today's date."
-                            ),
-                        },
+                        "required": ["query"],
                     },
-                    "required": ["query"],
-                },
+                )
             )
-        )
+        else:
+            tools.append(
+                _as_chat_function_tool(
+                    name="search_news",
+                    description=(
+                        "Search news for real-time evidence before submitting forecasts. "
+                        "Use at most one search per turn. "
+                        f"{search_results_description} "
+                        "IMPORTANT: Always set from_date and to_date to filter for recent articles "
+                        "(within the last 7 days of the current simulation date). "
+                        "Use YYYY-MM-DD format ONLY (e.g. '2025-06-15'). "
+                        "to_date cannot be after today's date. "
+                        "Example: search for 'Fed rate cut 2026 inflation'."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": (
+                                    "News search query string. Focus on concrete entities, events, "
+                                    "and evidence relevant to the target forecast."
+                                ),
+                            },
+                            "from_date": {
+                                "type": ["string", "null"],
+                                "description": (
+                                    "Earliest date for articles (YYYY-MM-DD format ONLY, "
+                                    "e.g. '2024-06-01'). Set to 7 days before today for recent news. "
+                                    "Must be a valid date, not keywords."
+                                ),
+                            },
+                            "to_date": {
+                                "type": ["string", "null"],
+                                "description": (
+                                    "Latest date for articles (YYYY-MM-DD format ONLY, "
+                                    "e.g. '2025-03-15'). Set to today's date. "
+                                    "Must be a valid date, not keywords. "
+                                    "Cannot be after today's date."
+                                ),
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                )
+            )
 
     tools.append(
         _as_chat_function_tool(
@@ -159,9 +196,23 @@ def build_action_tools(
                 "Each call must contain a single-item forecasts list for one qid only, and you "
                 "may submit again later in the same session to update that qid. Use real predicted "
                 "answers only; never placeholders like Unknown, TBD, Other, or N/A. Probabilities "
-                "must sum to <= 1.0. If the prompt specifies a target question ID, you may submit "
-                "only for that question. Example payload: "
-                '{"forecasts":[{"qid":"Q123","outcomes":{"Candidate A":0.55,"Candidate B":0.35}}]}'
+                "must sum to <= 1.0. You MUST include a structured reasoning field with "
+                "'evidence_for' and 'evidence_against' bullet points summarizing the key facts "
+                "that support and challenge your prediction. You MUST also include a "
+                "'counterfactual' field describing what chain of events would need to occur for "
+                "the OPPOSITE outcome to happen, and an 'evidence_diversity' field (integer >= 0) "
+                "counting how many distinct sources or search queries informed this forecast. "
+                "If the prompt specifies a target "
+                "question ID, you may submit only for that question. Example payload: "
+                '{"forecasts":[{"qid":"Q123","outcomes":{"Candidate A":0.55,"Candidate B":0.35}}],'
+                '"reasoning":"Evidence For:\\n- Polling data shows Candidate A leading by 8 points\\n'
+                '- Endorsement from key party figures\\nEvidence Against:\\n- Historical volatility in '
+                'similar races\\n- Economic headwinds may shift sentiment",'
+                '"counterfactual":"Candidate B would win if youth turnout exceeds 70% and economic '
+                'data worsens significantly in the final week",'
+                '"evidence_diversity":3,'
+                '"base_rate_estimate":"In the last 20 similar elections, the polling leader at this '
+                'stage won 14 times (70% base rate)"}'
             ),
             parameters={
                 "type": "object",
@@ -198,9 +249,61 @@ def build_action_tools(
                             },
                             "required": ["qid", "outcomes"],
                         },
-                    }
+                    },
+                    "reasoning": {
+                        "type": "string",
+                        "description": (
+                            "Structured reasoning with Evidence For and Evidence Against the "
+                            "prediction. Format as:\\n"
+                            "Evidence For:\\n- [fact 1]\\n- [fact 2]\\n"
+                            "Evidence Against:\\n- [counter-fact 1]\\n- [counter-fact 2]"
+                        ),
+                    },
+                    "counterfactual": {
+                        "type": "string",
+                        "description": (
+                            "Describe what specific chain of events or conditions would need to "
+                            "occur for the OPPOSITE outcome to happen. This must be a concrete, "
+                            "falsifiable scenario, not a vague 'anything could happen'. "
+                            "Example: 'The incumbent would lose if a major scandal breaks in the "
+                            "final month and third-party candidate polling exceeds 15%.'"
+                        ),
+                    },
+                    "evidence_diversity": {
+                        "type": "integer",
+                        "description": (
+                            "The number of DISTINCT sources, search queries, or data analyses "
+                            "that informed this forecast. Minimum 0. Count each unique search "
+                            "query, each df analysis approach, and each distinct news source. "
+                            "Aim for >= 3 distinct sources before submitting extreme probabilities "
+                            "(<10% or >90%)."
+                        ),
+                        "minimum": 0,
+                    },
+                    "base_rate_estimate": {
+                        "type": "string",
+                        "description": (
+                            "Brief statement of the historical base rate for similar events, "
+                            "if applicable. Example: 'In the past 50 years, only 3 of 12 "
+                            "incumbent parties facing >6% inflation won re-election (25% base "
+                            "rate).' If no relevant reference class exists, state that explicitly "
+                            "and explain why."
+                        ),
+                    },
+                    "market_sentiment_score": {
+                        "type": "number",
+                        "description": (
+                            "A float from -1.0 (market is overly pessimistic) to +1.0 "
+                            "(market is overly optimistic), where 0.0 means balanced. "
+                            "Base this on: market price extremeness (<1% or >99%→±0.8+), "
+                            "recent price trend (steep drop/rise without news→±0.5–0.8), "
+                            "news sentiment (strongly positive/negative headlines→±0.3–0.5), "
+                            "and divergence (your evidence contradicts market→adjust score "
+                            "toward your side). Score reflects MARKET sentiment, not your own opinion."
+                        ),
+                    },
                 },
-                "required": ["forecasts"],
+                "required": ["forecasts", "reasoning", "counterfactual", "evidence_diversity"],
             },
         )
     )
@@ -650,8 +753,51 @@ def tool_calls_to_parsed_action(
                 assistant_text,
                 calls,
             )
+        # Extract optional reasoning field from submit arguments
+        submit_reasoning = args.get("reasoning")
+        if isinstance(submit_reasoning, str) and submit_reasoning.strip():
+            submit_reasoning = submit_reasoning.strip()
+        else:
+            submit_reasoning = None
+
+        # Extract optional counterfactual field
+        submit_counterfactual = args.get("counterfactual")
+        if isinstance(submit_counterfactual, str) and submit_counterfactual.strip():
+            submit_counterfactual = submit_counterfactual.strip()
+        else:
+            submit_counterfactual = None
+
+        # Extract optional evidence diversity count
+        evidence_diversity = args.get("evidence_diversity")
+        try:
+            evidence_diversity = int(evidence_diversity)
+            if evidence_diversity < 0:
+                evidence_diversity = None
+        except (TypeError, ValueError):
+            evidence_diversity = None
+
+        # Extract optional base rate estimate
+        base_rate_estimate = args.get("base_rate_estimate")
+        if isinstance(base_rate_estimate, str) and base_rate_estimate.strip():
+            base_rate_estimate = base_rate_estimate.strip()
+        else:
+            base_rate_estimate = None
+
+        # Extract optional market sentiment score
+        sentiment_score = args.get("market_sentiment_score")
+        try:
+            sentiment_score = float(sentiment_score)
+            sentiment_score = max(-1.0, min(1.0, sentiment_score))
+        except (TypeError, ValueError):
+            sentiment_score = None
+
         return (
-            ParsedAction(action_type="submit", code=None, forecasts=out, query=None, error=None),
+            ParsedAction(action_type="submit", code=None, forecasts=out, query=None,
+                        submit_reasoning=submit_reasoning, error=None,
+                        submit_counterfactual=submit_counterfactual,
+                        base_rate_estimate=base_rate_estimate,
+                        evidence_diversity=evidence_diversity,
+                        market_sentiment_score=sentiment_score),
             assistant_text,
             calls,
         )
@@ -847,6 +993,7 @@ class NewsSearchStepResult:
     feedback: str
     phase: str
     successful_hit: bool
+    raw_results: tuple = ()  # Tuple of SearchResult objects (frozen for immutability)
 
 
 def optional_search_dates_from_parsed(parsed: ParsedAction) -> Tuple[Optional[date], Optional[date]]:
@@ -891,7 +1038,7 @@ def execute_news_search(
             successful_hit=False,
         )
 
-    result, error = search_handler.search(
+    result, error, raw_results = search_handler.search(
         parsed.query,
         max_results=max_results,
         search_type=search_type,
@@ -914,6 +1061,7 @@ def execute_news_search(
         feedback=f"SEARCH RESULTS:\n{result}",
         phase="search",
         successful_hit=True,
+        raw_results=tuple(raw_results),
     )
 
 

@@ -1,5 +1,6 @@
 """Action handler methods for BasicAgent."""
 
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from agents.utils.budget import BudgetTracker
@@ -53,7 +54,7 @@ class BasicActionHandlers:
         raw_stream: Optional[str] = None,
         tool_call: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Handle search action. Returns full chunk content directly."""
+        """Handle search action. Captures top-3 result snippets for logging/memory."""
         budget.consume_action()
 
         if not self._search_handler.is_available:
@@ -70,6 +71,11 @@ class BasicActionHandlers:
                     max_date=max_date,
                 )
             feedback = effect.feedback
+
+            # Capture top-3 search result snippets for daily evidence log
+            raw_results = list(effect.raw_results) if effect.raw_results else []
+            if raw_results and effect.successful_hit:
+                _store_search_evidence(self, raw_results[:3], qid, parsed.query)
         else:
             feedback = "SEARCH ERROR: No query provided."
 
@@ -227,6 +233,38 @@ class BasicActionHandlers:
                 title = self._query_handler.get_question_title(sub['qid'])
                 title_str = f" ({title})" if title else ""
                 feedback = f"Submitted forecast for qid={sub['qid']}{title_str}: {outcomes_str}."
+
+                # Attach submission reasoning if provided by the model
+                sub_reasoning = parsed.submit_reasoning
+                if sub_reasoning:
+                    feedback += f"\nReasoning: {sub_reasoning[:500]}"
+                    # Store in daily evidence log
+                    _store_submit_evidence(self, sub['qid'], sub['outcomes'], sub_reasoning)
+
+                # Log counterfactual if provided
+                counterfactual = parsed.submit_counterfactual
+                if counterfactual:
+                    feedback += f"\nCounterfactual: {counterfactual[:300]}"
+                    _store_submit_counterfactual(self, sub['qid'], counterfactual)
+
+                # Log evidence diversity if provided
+                evidence_div = parsed.evidence_diversity
+                if evidence_div is not None:
+                    feedback += f"\nEvidence Diversity: {evidence_div} distinct source(s)"
+                    _store_submit_evidence_diversity(self, sub['qid'], evidence_div)
+
+                # Log base rate estimate if provided
+                base_rate = parsed.base_rate_estimate
+                if base_rate:
+                    feedback += f"\nBase Rate: {base_rate[:300]}"
+                    _store_submit_base_rate(self, sub['qid'], base_rate)
+
+                # Log market sentiment score if provided
+                sentiment = parsed.market_sentiment_score
+                if sentiment is not None:
+                    feedback += f"\nMarket Sentiment Score: {sentiment:+.2f}"
+                    _store_submit_sentiment(self, sub['qid'], sentiment)
+
                 if dropped_forecasts > 0:
                     feedback += f"\nIgnored {dropped_forecasts} extra forecast block(s); submit exactly one qid per action."
             else:
@@ -257,3 +295,107 @@ class BasicActionHandlers:
         feedback = f"No valid action found. {error_msg}"
         tool_name = tool_call.get("name") if isinstance(tool_call, dict) else None
         self._append_feedback_message(messages, budget, feedback, tool_call=tool_call, tool_name=tool_name)
+
+
+# ── Daily evidence helpers ───────────────────────────────────────────────
+
+def _store_search_evidence(agent, results, qid, query):
+    """Store top search result snippets in the agent's daily evidence log and memory."""
+    if not results:
+        return
+    lines = ["Today's research:"]
+    for r in results:
+        title = getattr(r, 'title', '') or ''
+        snippet = getattr(r, 'snippet', '') or ''
+        source = getattr(r, 'source', '') or ''
+        date_pub = getattr(r, 'date_publish', None)
+        date_str = f" ({date_pub})" if date_pub else ""
+        url_str = f" [{source}]" if source else ""
+        lines.append(f"- {title}{url_str}{date_str}: {snippet[:200]}")
+    evidence_text = "\n".join(lines)
+
+    # Store in daily evidence list (for logging at end of day)
+    if not hasattr(agent, '_day_evidence'):
+        agent._day_evidence = []
+    agent._day_evidence.append({
+        "type": "search",
+        "query": query,
+        "qid": qid,
+        "evidence": evidence_text,
+        "results": [{"title": getattr(r, 'title', ''), "snippet": getattr(r, 'snippet', ''),
+                       "source": getattr(r, 'source', ''), "url": getattr(r, 'url', ''),
+                       "date_publish": str(getattr(r, 'date_publish', ''))}
+                      for r in results],
+    })
+
+    # Store in memory under "latest_evidence" if ActiveMemory is available
+    memory = getattr(agent, '_memory', None)
+    if isinstance(memory, ActiveMemory) and qid:
+        try:
+            memory.mem_add(
+                qid=qid, question="",
+                memory=f"[Search query: {query}]\n{evidence_text}",
+                category="evidence",
+            )
+        except Exception:
+            pass  # Memory storage is best-effort
+
+
+def _store_submit_evidence(agent, qid, outcomes, reasoning_text):
+    """Store structured prediction reasoning in the daily evidence log."""
+    if not reasoning_text:
+        return
+    outcomes_str = ", ".join(f"{k}={v:.1%}" for k, v in (outcomes or {}).items())
+
+    if not hasattr(agent, '_day_evidence'):
+        agent._day_evidence = []
+    agent._day_evidence.append({
+        "type": "prediction",
+        "qid": qid,
+        "outcomes": outcomes_str,
+        "reasoning": reasoning_text,
+    })
+
+
+def _store_submit_sentiment(agent, qid, sentiment_score):
+    """Store market sentiment score in the daily evidence log."""
+    if not hasattr(agent, '_day_evidence'):
+        agent._day_evidence = []
+    agent._day_evidence.append({
+        "type": "sentiment",
+        "qid": qid,
+        "market_sentiment_score": sentiment_score,
+    })
+
+
+def _store_submit_counterfactual(agent, qid, counterfactual):
+    """Store counterfactual reasoning in the daily evidence log."""
+    if not hasattr(agent, '_day_evidence'):
+        agent._day_evidence = []
+    agent._day_evidence.append({
+        "type": "counterfactual",
+        "qid": qid,
+        "counterfactual": counterfactual,
+    })
+
+
+def _store_submit_evidence_diversity(agent, qid, diversity_count):
+    """Store evidence diversity count in the daily evidence log."""
+    if not hasattr(agent, '_day_evidence'):
+        agent._day_evidence = []
+    agent._day_evidence.append({
+        "type": "evidence_diversity",
+        "qid": qid,
+        "evidence_diversity": diversity_count,
+    })
+
+
+def _store_submit_base_rate(agent, qid, base_rate):
+    """Store base rate estimate in the daily evidence log."""
+    if not hasattr(agent, '_day_evidence'):
+        agent._day_evidence = []
+    agent._day_evidence.append({
+        "type": "base_rate",
+        "qid": qid,
+        "base_rate_estimate": base_rate,
+    })

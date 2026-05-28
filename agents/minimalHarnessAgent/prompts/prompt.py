@@ -231,6 +231,85 @@ def _get_data_notes() -> str:
     # return "Note: `my_prediction` column contains your current forecast as a dict (or None if not yet predicted)."
     return "Note: `my_prediction` column contains your current forecast as a dict (or None if not yet predicted). Similarly, `ground_truth` column contains the ground truth answer which is generally a string (or None if not yet resolved)."""
 
+# ── Debiasing section (matches BasicAgent._build_debiasing_section) ──
+
+_DEBIASING_SECTION = """\
+## DEBIASING & EVIDENCE QUALITY PROTOCOL
+
+Your predictions are vulnerable to over-optimism, confirmation bias, and anchoring on
+initial evidence. The following protocols are MANDATORY for every forecast.
+
+---
+
+### 1. DEVIL'S ADVOCATE — Counter-Evidence Search
+
+Before submitting any forecast, run at least ONE search query explicitly designed to
+find evidence that CONTRADICTS your preliminary conclusion. Frame the search to
+steel-man the opposing view. If you find credible counter-evidence, adjust your
+probabilities — even a 5-10 point shift demonstrates calibration awareness.
+
+---
+
+### 2. BASE-RATE ANCHORING
+
+Every forecast MUST be anchored to a relevant historical base rate.
+- Identify the appropriate reference class: what similar events occurred historically?
+- Start your probability from the base rate, then adjust using specific evidence.
+- The further your forecast is from the base rate, the stronger your evidence must be.
+- **Extreme Probability Rule**: For any probability <10% or >90%, you MUST:
+  (a) State the base rate for similar events
+  (b) Explain what SPECIFIC factors make this case different
+  (c) Have at least TWO distinct pieces of confirmatory evidence
+
+---
+
+### 3. EVIDENCE DIVERSITY
+
+Run at least 2-3 SEARCH QUERIES with DIFFERENT ANGLES before submitting:
+- One broad query to understand the landscape
+- One query targeting the bullish/positive case
+- One query targeting the bearish/negative case
+Also browse articles/ directly for additional perspectives. The more independent
+sources you consult, the less likely you are to anchor on a single narrative.
+
+---
+
+### 4. COUNTERFACTUAL REASONING
+
+For every forecast, document in your notes: "What specific chain of events would
+cause the OPPOSITE outcome?" This must be concrete and falsifiable — vague statements
+like "anything could happen" are worthless. A good counterfactual lets you recognize
+in real time when your forecast is going wrong.
+
+---
+
+### 5. CONFIDENCE CALIBRATION
+
+- **Pre-Mortem**: Imagine it is resolution date and your forecast was WRONG. Why?
+- **Extremity Check**: Before writing >=90% or <=10%, ask: "Would I bet $1,000 of my
+  own money on this?" If no, pull toward 50%.
+- **Bias Checklist** — Before submitting, scan for:
+  - Confirmation bias: Did I search harder for supporting than opposing evidence?
+  - Recency bias: Am I overweighting the latest news vs. long-term trends?
+  - Narrative bias: Am I fitting facts into a compelling story?
+  - Over-precision: Am I more confident than the evidence warrants?
+
+---
+
+### SUBMISSION CHECKLIST
+
+Before calling `mcp__forecast__submit_forecasts`, confirm:
+1. I searched for counter-evidence (not just confirming evidence)
+2. I stated a base rate and explained deviations from it
+3. I consulted at least 2-3 independent sources or search angles
+4. I can describe a specific, falsifiable scenario where I'd be wrong
+5. My probability would survive the "$1,000 bet" test
+
+Document these in your reasoning notes even if the submission tool doesn't capture them.
+
+"""
+
+
 # ── Main prompt builder ───────────────────────────────────────────────
 
 def build_system_prompt(
@@ -326,6 +405,8 @@ def build_system_prompt(
 
 
 {scoring_section}
+
+{_DEBIASING_SECTION}
 
 ## AVAILABLE DATA
 {search_advice} 

@@ -28,6 +28,11 @@ class ParsedAction:
     memory_update_data: Optional[Dict] = None  # For memory_update: partial fields
     mem_data: Optional[Dict] = None  # For mem_add/update: {qid, question, memory, category}
     mem_qid: Optional[str] = None  # For mem_update/delete: target qid
+    submit_reasoning: Optional[str] = None  # For submit: model's reasoning/evidence
+    submit_counterfactual: Optional[str] = None  # For submit: what world produces opposite outcome
+    base_rate_estimate: Optional[str] = None  # For submit: historical base rate for similar events
+    evidence_diversity: Optional[int] = None  # For submit: count of distinct sources consulted
+    market_sentiment_score: Optional[float] = None  # For submit: -1.0 to +1.0 sentiment
     error: Optional[str] = None  # Error message if parsing failed
 
 

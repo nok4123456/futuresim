@@ -14,109 +14,24 @@ submissions in this mode. The prompt does not suggest note-taking or memory.
 from datetime import date, timedelta
 from typing import Optional
 
-
-def _iso(d) -> str:
-    return d.isoformat() if hasattr(d, "isoformat") else str(d)
-
-
-# ── Workflow / handholding versions are kept identical to prompt.py ────
-
-HANDHOLDING_VERSIONS = ("v1", "v2", "v3")
-
-
-def _get_workflow_basic(handholding_version: str = "v1") -> str:
-    if handholding_version == "v1":
-        return """\
-1. Read market.csv to understand active questions (is_resolved == False).
-2. Research using `mcp__forecast__search_news` and direct file browsing in articles/.
-3. Submit predictions for each active question using `mcp__forecast__submit_forecasts`.
-4. Call `mcp__forecast__next_day` when done. You'll receive resolution feedback with your Brier score per question — use this to learn from mistakes and improve calibration.
-5. Repeat until the simulation ends."""
-    if handholding_version == "v2":
-        return """\
-1. Read market.csv to understand active questions (is_resolved == False).
-2. Research using `mcp__forecast__search_news` and direct file browsing in articles/.
-3. Submit predictions for each active question using `mcp__forecast__submit_forecasts`.
-4. Call `mcp__forecast__next_day` when done. You'll receive resolution feedback with your Brier score per question — use this to learn from mistakes and improve calibration.
-5. On every subsequent day: re-read market.csv, search the new articles for updates, and **revise any forecast on a still-active question where new evidence has shifted your view**, then call next_day. A forecast is never "done" while its question is still active."""
-    if handholding_version == "v3":
-        return """\
-1. Read market.csv to understand active questions (is_resolved == False).
-2. Research using `mcp__forecast__search_news` and direct file browsing in articles/.
-3. Submit predictions for each active question using `mcp__forecast__submit_forecasts`.
-4. Call `mcp__forecast__next_day` when done. You'll receive resolution feedback with your Brier score per question — use this to learn from mistakes and improve calibration.
-5. On every subsequent day: re-read market.csv, search the new articles for updates, and **revise any forecast on a still-active question where new evidence has shifted your view**, then call next_day. A forecast is never "done" while its question is still active.
-6. **IMPORTANT**: Actively look out for questions resolving the next day (check via the `resolution_date` column of market.csv) and make sure you have up-to-date predictions on them."""
-    raise ValueError(
-        f"Unknown handholding_version={handholding_version!r}; expected one of {HANDHOLDING_VERSIONS}"
-    )
+from .prompt import (
+    _iso,
+    HANDHOLDING_VERSIONS,
+    _get_workflow_basic,
+    WORKFLOW_BASIC,
+    _BINARY_TW_NUDGE,
+    _build_binary_brier_scoring_section,
+    _MCQ_TW_NUDGE,
+    _build_brier_skill_scoring_section,
+    _get_scoring_section,
+    _search_results_description,
+    _get_source_rules,
+    _DEBIASING_SECTION,
+)
 
 
-WORKFLOW_BASIC = _get_workflow_basic("v1")
-
-
-# NOTE: HANDHOLDING_SECTION is intentionally absent in this no-memory variant.
-
-
-def _get_source_rules(source_name: str) -> str:
-    del source_name
-    return ""
-
-
-_BINARY_TW_NUDGE = ' — **but the TW score equally rewards updating when new evidence arrives, since each new submission overwrites the prior one and accrues weight from that day forward. Never treat a forecast as "done" while its question is still active.**'
-
-
-def _build_binary_brier_scoring_section(handholding_version: str = "v1") -> str:
-    nudge = _BINARY_TW_NUDGE if handholding_version != "v1" else ""
-    return f"""\
-## SCORING (Brier Score, Binary)
-You are evaluated on **Brier Score** for binary Yes/No questions.
-- Let p = your predicted probability for **Yes**.
-- Let y = 1 if the resolved outcome is **Yes**, else 0.
-- **Brier Score = (p - y)^2**.
-- **Lower is better** (0 is perfect, 1 is worst).
-
-Key Mechanics:
-1. **Accuracy + Calibration**: Assign probabilities that reflect true likelihood.
-2. **Binary Outcomes**: Use exact outcomes "Yes" and "No".
-3. **Time-Weighted Score (TW-Score)**: For each question, your time-weighted score = sum(daily_score) / total_question_days where daily_score is the Brier Skill Score for that day (0 if you have no active prediction on that question) and total_question_days is the number of days the question was active. Each prediction's Brier Skill Score (1 minus sum of squared errors) is weighted by how many days it was active before you updated it. Predictions made earlier carry more weight since they cover more days, so act on your best information as soon as possible rather than waiting{nudge}.
-4. **Prediction-Count Incentive**: Scores are summed (not averaged) across all questions you predict on.
-"""
-
-
-_MCQ_TW_NUDGE = ' — **but the TW score equally rewards updating when new evidence arrives, since each new submission overwrites the prior one and accrues weight from that day forward. Never treat a forecast as "done" while its question is still active.**'
-
-
-def _build_brier_skill_scoring_section(
-    max_outcomes_per_question: int,
-    handholding_version: str = "v1",
-) -> str:
-    nudge = _MCQ_TW_NUDGE if handholding_version != "v1" else ""
-    return f"""\
-## SCORING (Brier Skill Score)
-You have to output a distribution of (outcome, probability) pairs for each question you make a forecast on.
-You are evaluated on the **Brier Skill Score** = 1 - Σ(p_i - y_i)^2 summed over all outcomes (thus, ranging from -1 to +1), where:
-- p_i = your probability for outcome i
-- y_i = 1 if your outcome i is TRUE (actually occurred), 0 otherwise
-- **Higher is better**: 1.0 = perfect, 0.0 = abstaining from guessing, negative = worse than abstaining.
-
-Key Mechanics:
-1. **Accuracy + Calibration**: Try to guess the most likely outcome(s) and assign calibrated probabilities which reflect the likelihood of the outcome(s) occurring.
-2. **Time-Weighted Score (TW-Score)**: For each question, your time-weighted score = sum(daily_score * 100) / total_question_days where daily_score is the Brier Skill Score for that day (0 if you have no active prediction on that question) and total_question_days is the number of days the question was active. Each prediction's Brier Skill Score (1 minus sum of squared errors) is weighted by how many days it was active before you updated it. Predictions made earlier carry more weight since they cover more days, so act on your best information as soon as possible rather than waiting{nudge} Thus, for a set of K questions in total (in the market), the maximum possible TW-Score is 100 * K (if one predicts the correct answer for all K questions on their respective opening date each with 100% probability) and minimum possible TW-Score similarly is -100 * K.
-3. **Prediction-Count Incentive**: For each question where you don't have any active prediction on a day, your accuracy, brier skill score, and TW-score for that question will be counted as 0 on that day. Your job is to MAXIMIZE your TW-score. Your TW-score is summed (NOT averaged) across all questions and higher score is better.
-4. **End-of-Session Metrics**: At the end of each session, your accuracy, brier skill score, and TW-score *until that session* are calculated and displayed to you. Accuracy and Brier Skill Score are calculated by taking the mean across ALL the questions (0 for question where you don't have any active prediction) while TW-Score is summed across all questions. You are encouraged to maximize your TW-score throughout.
-5. **Max Outcomes**: Submit at most {max_outcomes_per_question} outcomes per question.
-6. **No Placeholders**: "Unknown", "TBD", "Other" hurt your score. Be specific.
-"""
-
-
-def _get_scoring_section(
-    source_name: str,
-    max_outcomes_per_question: int,
-    handholding_version: str = "v1",
-) -> str:
-    del source_name
-    return _build_brier_skill_scoring_section(max_outcomes_per_question, handholding_version)
+def _get_data_notes() -> str:
+    return "Note: `ground_truth` column contains the ground truth answer which is generally a string (or None if not yet resolved)."""
 
 
 def _build_cadence_section(
@@ -171,18 +86,6 @@ def _build_cadence_section(
         f"Current date: {_iso(current_date)}. {last_text}{next_text}\n"
         f"{trailing}\n"
     )
-
-
-def _search_results_description(max_search_results: int = 5, chunk_tokens: int = 512) -> str:
-    extra_info = "The search tool uses a hybrid approach to retrieve articles, combining both semantic similarity (through an embedding model) and keyword matching."
-    return (
-        f"You have access to a search tool that returns up to {max_search_results} retrieved article chunks, "
-        f"each roughly {chunk_tokens} tokens long. {extra_info}"
-    )
-
-
-def _get_data_notes() -> str:
-    return "Note: `ground_truth` column contains the ground truth answer which is generally a string (or None if not yet resolved)."""
 
 
 def build_system_prompt(
@@ -250,6 +153,8 @@ def build_system_prompt(
 
 
 {scoring_section}
+
+{_DEBIASING_SECTION}
 
 ## AVAILABLE DATA
 {search_advice}

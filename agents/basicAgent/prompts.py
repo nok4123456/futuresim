@@ -42,10 +42,18 @@ class BasicPromptBuilder:
 
     def _search_results_description(self) -> str:
         chunk_tokens = self._search_handler.chunk_tokens
-        tool_type = type(self._search_handler._search_tool).__name__ if self._search_handler._search_tool else "News"
+        tool_type = self._search_handler.search_tool_type
+        if tool_type == "polymarket":
+            return (
+                f"Returns up to {self.config.max_search_results} Polymarket market results "
+                f"(title, current odds for each outcome, volume, liquidity, end date, and URL). "
+                f"Use market slugs (hyphenated names) or keywords to find matching prediction markets."
+            )
         return (
             f"Returns up to {self.config.max_search_results} news article results "
-            f"(title, source, date, snippet, and URL for each)."
+            f"(title, source, date, snippet, and URL for each). "
+            f"Always filter by date using from_date/to_date "
+            f"to get recent articles from the last 7 days."
         )
 
     def _get_timegap_days(self) -> int:
@@ -256,6 +264,267 @@ You are scored relative to your competitors: to earn a positive time-weighted pe
         """Get source-specific submission rules."""
         return ""
 
+    def _build_sentiment_section(self) -> str:
+        """Build the market sentiment and contrarian analysis instructions.
+
+        When the agent has access to market data (Polymarket tool or similar),
+        this section teaches it to detect emotional skew and find edges.
+        """
+        is_polymarket = (
+            hasattr(self, '_search_handler')
+            and self._search_handler.is_available
+            and self._search_handler.search_tool_type == "polymarket"
+        )
+        if is_polymarket:
+            return """## MARKET SENTIMENT & CONTRARIAN ANALYSIS
+
+You have access to live Polymarket data. Use it to detect when the crowd is emotionally skewed:
+
+### 1. Gap Detection
+- After researching, compare your evidence-based probability estimate against the Polymarket odds.
+- **Flag any gap > 15 percentage points** between your forecast and the market price.
+- Explain whether the gap comes from your superior information, market oversight, or emotional bias.
+
+### 2. Emotional Language Scan
+- Scan search results, news snippets, and market commentary for emotional words:
+  - **Euphoria / Greed**: "to the moon", "sure thing", "can't lose", "guaranteed", "free money"
+  - **Panic / Fear**: "bloodbath", "meltdown", "crash", "panic selling", "end of"
+  - **FOMO**: "everyone is buying", "don't miss out", "last chance", "pumping"
+  - **Complacency**: "priced in", "nothing to see", "boring", "already decided"
+  - **Capitulation**: "giving up", "whatever", "pointless to predict", "random"
+
+### 3. Herd Behavior Detection
+- If Polymarket odds moved >10 points in the past week without clear fundamental news, note it as possible herd behavior.
+- Rapid price swings on low-volume markets may indicate manipulation or thin liquidity — be skeptical.
+
+### 4. Sentiment Verdict
+In your `reasoning` field for EVERY submission, include a Market Sentiment Assessment section:
+
+```
+Market Sentiment: [overly optimistic / overly pessimistic / balanced]
+Gap: [X] points (my forecast [Y]% vs market [Z]%)
+Evidence:
+- [specific facts supporting your view]
+- [emotional signals detected]
+- [whether you see a contrarian opportunity]
+```
+
+**IMPORTANT**: In EVERY `submit_forecasts` call, you MUST set the `market_sentiment_score` field to a float from -1.0 (market overly pessimistic) to +1.0 (market overly optimistic). Use this scale:
+- Market price <1% or >99%: ±0.8 to ±1.0 (extreme)
+- Steep price move (>10pts/week) without clear news: ±0.5 to ±0.8
+- Strongly positive/negative news headlines: ±0.3 to ±0.5
+- Small gap with weak news signal: ±0.1 to ±0.3
+- Balanced, no strong signals: 0.0
+The score reflects THE MARKET'S emotional state, not your own opinion.
+
+### 5. Contrarian Edge
+- If the market is emotionally skewed AND your evidence-based forecast leans opposite, flag it:
+  "CONTRARIAN OPPORTUNITY: The market appears [emotion] because [reasons], but the evidence suggests [conclusion]. This gap may represent an edge."
+- Only claim a contrarian edge when you have **specific evidence**, not just a hunch.
+- If the market appears balanced (no strong emotional signals, small gap), state that clearly.
+
+"""
+        # Non-Polymarket mode: basic sentiment guidance
+        return """## SENTIMENT AWARENESS
+
+When analyzing news and evidence for your forecasts:
+
+### Emotional Language Check
+- Scan news articles for emotional or sensational language:
+  - **Overly bullish**: "certain to", "guaranteed", "unstoppable", "historic rally"
+  - **Overly bearish**: "crash", "meltdown", "crisis", "worst ever", "panic"
+  - Be cautious when news sentiment is one-sided — markets overshoot on emotion.
+
+### Market Comparison
+- If you have external market data (from memory, prior sessions, or data queries), compare your forecast against any available crowd estimates.
+- Stay evidence-based rather than following the crowd or reacting to headlines.
+
+### Report
+In your submission reasoning, briefly note when news sentiment appears emotionally charged and whether it influenced your assessment.
+
+"""
+
+    def _build_debiasing_section(self) -> str:
+        """Build the comprehensive debiasing section covering all five anti-overoptimism
+        and evidence-diversity features.
+
+        Returns a multi-section prompt block for:
+        1. Devil's Advocate / Counter-Evidence Search
+        2. Base-Rate Anchoring
+        3. Evidence Diversity Requirement
+        4. Counterfactual Reasoning
+        5. Confidence Calibration / Overconfidence Nudges
+        """
+        return """## DEBIASING & EVIDENCE QUALITY PROTOCOL
+
+Your predictions are vulnerable to over-optimism, confirmation bias, and anchoring on
+initial evidence. The following five protocols are MANDATORY for every forecast you submit.
+
+---
+
+### 1. DEVIL'S ADVOCATE — Counter-Evidence Search (MANDATORY)
+
+Before submitting any forecast, you MUST actively search for evidence that contradicts
+your preliminary conclusion. This is the single most important debiasing step.
+
+**Procedure:**
+- After forming an initial probability estimate, run at least ONE search query explicitly
+  designed to find contrary evidence.
+- Frame the search to steel-man the opposing view: instead of "problems with X," search
+  for "why X will succeed" if you're leaning bearish, or "risks to X" if you're leaning
+  bullish.
+- If you find credible counter-evidence, adjust your probabilities — even a 5-10 point
+  shift demonstrates calibration awareness.
+- In your reasoning, explicitly flag: "I initially estimated P=[X]%, but after searching
+  for counter-evidence found [specific facts], which pulled my estimate to [Y]%."
+
+**Red Flags (your forecast is likely overconfident if):**
+- You searched only for confirming evidence
+- Your Evidence Against section is weaker or shorter than Evidence For
+- You cannot name a specific, plausible scenario where you'd be wrong
+
+---
+
+### 2. BASE-RATE ANCHORING (MANDATORY)
+
+Every forecast MUST be anchored to a relevant historical base rate before adjusting
+for case-specific evidence. Extreme probabilities (<10% or >90%) require especially
+strong justification.
+
+**Procedure:**
+- Identify the appropriate reference class: what similar events have occurred historically?
+- State the base rate explicitly in your `base_rate_estimate` field.
+- Start your probability from the base rate, then adjust using specific evidence
+  (following Bayes-like reasoning: prior → evidence → posterior).
+- The further your forecast is from the base rate, the stronger your evidence must be.
+
+**Reference Class Examples:**
+- Elections: "In the last N elections in this country, the incumbent party won X times."
+- Technology: "Of the last N major tech product launches, X met their stated timeline."
+- Geopolitics: "In N similar territorial disputes since 1990, escalation occurred in X cases."
+- Economics: "In N instances of inflation above Y% with unemployment below Z%, the central
+  bank cut rates within 6 months in X cases."
+
+**Extreme Probability Rule:**
+For any probability <10% or >90%, you MUST:
+(a) State the base rate for similar events
+(b) Explain what SPECIFIC factors make this case different from the base rate
+(c) Provide at least TWO distinct pieces of confirmatory evidence
+
+**No-Reference-Class Cases:**
+If no relevant reference class exists (truly novel situations), acknowledge this explicitly
+and explain why you believe the situation is unprecedented. Widen your confidence intervals
+accordingly — unique events warrant less extreme probabilities.
+
+---
+
+### 3. EVIDENCE DIVERSITY REQUIREMENT (MANDATORY)
+
+Your `evidence_diversity` count must reflect genuinely independent sources of information.
+Avoid anchoring on your first search result or a single news story.
+
+**Procedure:**
+- Run at least 2-3 SEARCH QUERIES with DIFFERENT ANGLES before submitting:
+  - One broad query to understand the landscape
+  - One query targeting the bullish/positive case
+  - One query targeting the bearish/negative case
+- Additionally, use `query_df` to explore the data from multiple angles.
+- Count each DISTINCT search query and each DISTINCT analytical approach.
+- Report the total count in the `evidence_diversity` field.
+
+**Independence Check:**
+Two sources are NOT independent if they:
+- Come from the same search query (different snippets from one search = 1 source)
+- Cite the same underlying report or data
+- Are from the same publication on the same topic
+
+**Minimum Standards:**
+- evidence_diversity >= 2 for any forecast
+- evidence_diversity >= 3 for extreme probabilities (<10% or >90%)
+- If evidence_diversity reports 0-1, your forecast will be flagged as potentially
+  under-researched
+
+---
+
+### 4. COUNTERFACTUAL REASONING (MANDATORY)
+
+For every forecast, describe the specific chain of events that would cause the OPPOSITE
+outcome to occur. This forces you to consider alternative futures and reduces
+overconfidence.
+
+**Procedure:**
+- In your `counterfactual` field, describe a concrete, falsifiable scenario:
+  - What events would need to happen?
+  - What assumptions would need to be wrong?
+  - What signals would you look for that indicate you were incorrect?
+- A good counterfactual is specific enough that you could recognize it happening in
+  real time. It answers: "What would I need to see next week/month to change my mind?"
+
+**Good Counterfactuals:**
+- "If unemployment rises above 5% and consumer spending drops for two consecutive
+  months, the Fed would likely cut rates despite current hawkish rhetoric."
+- "If a new candidate enters the race and polls above 10% within 4 weeks, the
+  frontrunner's probability would drop significantly."
+
+**Bad Counterfactuals (too vague — do NOT write these):**
+- "Anything could happen."
+- "Unexpected events could change things."
+- "If the situation changes."
+
+**Decision Rule:**
+If you cannot write a specific, falsifiable counterfactual, your model of the situation
+is likely too shallow. Spend more time researching before submitting.
+
+---
+
+### 5. CONFIDENCE CALIBRATION — Overconfidence Nudges
+
+Forecasters systematically overestimate their accuracy. The following nudges help
+counteract this tendency.
+
+**Procedure:**
+- **Pre-Mortem Check**: Imagine it is the resolution date and your forecast was WRONG.
+  Write down the most likely reason why. This should directly inform your
+  Evidence Against section.
+- **Extremity Check**: Every time you write a probability >= 90% or <= 10%, ask
+  yourself: "Would I bet $1,000 of my own money on this at these odds?" If the
+  answer is no, pull your estimate toward 50%.
+- **Outside View**: Before finalizing, ask: "What would a well-informed but
+  disinterested observer think of this probability?" They would likely be less
+  extreme than you are.
+- **Two-Way Door Check**: Ask "On what specific future evidence would I reverse
+  this prediction?" If the answer is "nothing would change my mind," your
+  probability is too extreme.
+- **Calibration Memory**: If you have been wrong on similar questions in the past,
+  regress your current forecast toward the base rate. Pattern: forecasters who
+  were overconfident before tend to be overconfident again.
+
+**Bias Checklist** — Before submitting, scan your reasoning for:
+- [ ] Confirmation bias: Did I search harder for supporting than opposing evidence?
+- [ ] Recency bias: Am I overweighting the latest news vs. long-term trends?
+- [ ] Narrative bias: Am I fitting facts into a compelling story rather than
+      weighing them independently?
+- [ ] Over-precision: Am I more confident than the evidence warrants?
+      (If you have < 5 independent sources, the answer is probably YES.)
+- [ ] Anchoring: Did I start from a base rate and adjust, or pick a number
+      that "felt right"?
+
+---
+
+### SUBMISSION REQUIREMENTS SUMMARY
+
+When you call `submit_forecasts`, you MUST now include:
+1. `reasoning` — Evidence For AND Evidence Against (as before)
+2. `counterfactual` — Concrete scenario for the opposite outcome (NEW — REQUIRED)
+3. `evidence_diversity` — Integer count of distinct sources consulted (NEW — REQUIRED)
+4. `base_rate_estimate` — Historical base rate for similar events (NEW — STRONGLY RECOMMENDED)
+5. `market_sentiment_score` — Market emotional state from -1.0 to +1.0 (as before)
+
+These are not optional. Forecasts submitted without counterfactual reasoning or with
+evidence_diversity < 2 will be flagged as procedurally deficient.
+
+"""
+
     def _build_instructions(self, current_date: date) -> str:
         """Build the daily tool-calling prompt."""
         df_info = self._query_handler.get_info()
@@ -303,19 +572,36 @@ Use the reasoning and insights above to inform today's forecasts.
 
         search_tool_line = ""
         search_advice = ""
+        is_polymarket = self._search_handler.search_tool_type == "polymarket" if self._search_handler.is_available else False
         if self._search_handler.is_available:
-            cutoff_desc = "today's date"
-            if self.config.search_cutoff_days > 0:
-                cutoff_date = current_date - timedelta(days=self.config.search_cutoff_days)
-                cutoff_desc = f"{cutoff_date} (today - {self.config.search_cutoff_days} days)"
-            search_tool_line = (
-                "- `search_news(query, from_date?, to_date?)`: search news for evidence. "
-                f"`to_date` is capped at {cutoff_desc}. {self._search_results_description()}\n"
-            )
-            search_advice = (
-                "You have access to a news search tool that you can use to find "
-                "real-time evidence for your forecasts."
-            )
+            if is_polymarket:
+                search_tool_line = (
+                    "- `search_news(query)`: query Polymarket for real-time prediction-market odds. "
+                    f"Pass a market slug (e.g. 'will-ai-replace-all-jobs-by-2030') or keywords "
+                    f"to find matching markets. Returns current prices for each outcome, "
+                    f"volume, liquidity, and market URL. {self._search_results_description()}\n"
+                )
+                search_advice = (
+                    "You have access to live Polymarket odds data. Use this to check what the "
+                    "crowd believes and compare against your own evidence-based forecast. "
+                    "Look for gaps between market prices and your assessment."
+                )
+            else:
+                cutoff_desc = "today's date"
+                if self.config.search_cutoff_days > 0:
+                    cutoff_date = current_date - timedelta(days=self.config.search_cutoff_days)
+                    cutoff_desc = f"{cutoff_date} (today - {self.config.search_cutoff_days} days)"
+                search_tool_line = (
+                    "- `search_news(query, from_date?, to_date?)`: search news for evidence. "
+                    f"`to_date` is capped at {cutoff_desc}. "
+                    f"Always pass from_date and to_date to filter for recent articles "
+                    f"(within the last 7 days). {self._search_results_description()}\n"
+                )
+                search_advice = (
+                    "You have access to a date-filtered news search tool that you can use to find "
+                    "real-time evidence for your forecasts. Always search with date filters "
+                    "to get recent, relevant articles."
+                )
 
         memory_tools_section = ""
         if isinstance(self._memory, ActiveMemory):
@@ -401,11 +687,16 @@ Use the reasoning and insights above to inform today's forecasts.
                 "At end of day, you will get another opportunity to update your memory."
             )
 
+        sentiment_section = self._build_sentiment_section()
+        debiasing_section = self._build_debiasing_section()
+
         sections = [
             f"You are a forecasting agent. Today is {current_date}. Your goal is to make accurate and calibrated predictions.",
             intro_block,
             available_data_section,
             code_env_section,
+            sentiment_section,
+            debiasing_section,
             (
                 "## TOOLS AVAILABLE FOR YOUR USE\n"
                 "Use the function tools from the tool schema. Call exactly one tool per turn.\n"
@@ -427,7 +718,13 @@ Use the reasoning and insights above to inform today's forecasts.
                 f"- Maximum of {self.config.max_outcomes_per_question} outcomes allowed per question.\n"
                 "- Outcome names must be REAL predicted answers (e.g. person names, locations, dates, etc.)\n"
                 "- NEVER use placeholders like \"Unknown\", \"TBD\", \"Other\", or \"N/A\"\n"
-                "- Probabilities must sum to <= 1.0"
+                "- Probabilities must sum to <= 1.0\n"
+                "- MUST include the `reasoning` field with Evidence For and Evidence Against — list the key facts, "
+                "search results, or data points that support your prediction and those that challenge it\n"
+                "- MUST include `counterfactual` — specific chain of events that would produce the OPPOSITE outcome\n"
+                "- MUST include `evidence_diversity` — integer count of distinct search queries and sources consulted\n"
+                "- SHOULD include `base_rate_estimate` — historical frequency of similar events (reference class)\n"
+                "- MUST include `market_sentiment_score` — float from -1.0 (overly pessimistic) to +1.0 (overly optimistic)"
             ),
             tip_line,
             f"---\n{budget_start_block}Begin.",

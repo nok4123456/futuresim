@@ -5,18 +5,13 @@ OpenRouter API inference provider. Exposes chat() and chat_json() with the
 same provider-facing interface used by the agents.
 """
 
-import os
 import time
-import random
 from threading import Lock
 from typing import Dict, Any, List, Optional, Tuple
 
-try:
-    import requests
-except ImportError:
-    raise ImportError(
-        "requests module not found. Install with: pip install requests"
-    )
+import requests
+
+from inference.base import BaseInference
 
 
 class GlobalRateLimiter:
@@ -26,14 +21,14 @@ class GlobalRateLimiter:
     """
     _instance: Optional['GlobalRateLimiter'] = None
     _lock = Lock()
-    
+
     def __new__(cls, requests_per_second: float = 32.0):
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super().__new__(cls)
                 cls._instance._initialized = False
             return cls._instance
-    
+
     def __init__(self, requests_per_second: float = 32.0):
         if self._initialized:
             return
@@ -42,7 +37,7 @@ class GlobalRateLimiter:
         self.interval = 1.0 / requests_per_second
         self.last_request = 0.0
         self._acquire_lock = Lock()
-    
+
     def acquire(self):
         """Block until a request slot is available."""
         with self._acquire_lock:
@@ -51,7 +46,7 @@ class GlobalRateLimiter:
             if wait_time > 0:
                 time.sleep(wait_time)
             self.last_request = time.time()
-    
+
     @classmethod
     def configure(cls, requests_per_second: float):
         """Reconfigure the global rate limiter."""
@@ -126,63 +121,38 @@ def get_session() -> requests.Session:
         return _session
 
 
-class OpenRouterInference:
+class OpenRouterInference(BaseInference):
     """
     OpenRouter API inference provider.
-    
+
     Environment variable required:
         OPENROUTER_API_KEY: Your OpenRouter API key
-    
+
     Usage:
         inference = OpenRouterInference("xiaomi/mimo-v2-flash:free")
         response = inference.chat(messages, {"temperature": 0.7, "max_tokens": 2048})
     """
-    
+
     API_URL = "https://openrouter.ai/api/v1/chat/completions"
-    
-    def __init__(self, 
-                 model: str,
-                 api_key: str = None,
-                 max_retries: int = 3,
-                 base_delay: float = 10.0,
-                 max_delay: float = 60.0,
-                 **kwargs):
-        """
-        Initialize OpenRouter inference provider.
-        
-        Args:
-            model: Model identifier (e.g., "xiaomi/mimo-v2-flash:free")
-            api_key: OpenRouter API key (defaults to OPENROUTER_API_KEY env var)
-            max_retries: Maximum retry attempts on transient errors (default 3)
-            base_delay: Base delay in seconds for exponential backoff (default 1.0)
-            max_delay: Maximum delay cap in seconds (default 30.0)
-            **kwargs: Additional default parameters for requests
-        """
-        self.model = model
-        self.model_name = model  # For compatibility with provider interface
-        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
-        
-        if not self.api_key:
-            raise ValueError(
-                "OpenRouter API key required. Set OPENROUTER_API_KEY or pass api_key."
-            )
-        
-        self.max_retries = min(3, max(0, int(max_retries)))
-        self.base_delay = base_delay
-        self.max_delay = max_delay
-        kwargs.pop("enable_caching", None)
-        self.default_kwargs = kwargs
-        
-        # Request headers
-        self.headers = {
+    API_KEY_ENV = "OPENROUTER_API_KEY"
+
+    def _post_init(self) -> None:
+        # Ensure rate limiter is initialized
+        GlobalRateLimiter()
+
+    def _build_headers(self) -> Dict[str, str]:
+        return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/OpenForecaster/futuresim",
         }
-        
-        # Ensure rate limiter is initialized
-        GlobalRateLimiter()
-    
+
+    @staticmethod
+    def _get_param_mapping() -> Dict[str, str]:
+        mapping = BaseInference._get_param_mapping()
+        mapping["parallel_tool_calls"] = "parallel_tool_calls"
+        return mapping
+
     def _build_payload(
         self,
         messages: List[Dict[str, Any]],
@@ -194,21 +164,7 @@ class OpenRouterInference:
             "usage": {"include": True},
         }
 
-        param_mapping = {
-            "temperature": "temperature",
-            "max_tokens": "max_tokens",
-            "top_p": "top_p",
-            "top_k": "top_k",
-            "frequency_penalty": "frequency_penalty",
-            "presence_penalty": "presence_penalty",
-            "stop": "stop",
-            "tools": "tools",
-            "tool_choice": "tool_choice",
-            "parallel_tool_calls": "parallel_tool_calls",
-        }
-        for local_key, api_key in param_mapping.items():
-            if local_key in sampling_params:
-                payload[api_key] = sampling_params[local_key]
+        self._apply_param_mapping(payload, sampling_params)
 
         reasoning_cfg = sampling_params.get("reasoning")
         if reasoning_cfg is not None:
@@ -216,29 +172,17 @@ class OpenRouterInference:
                 reasoning_cfg = {"effort": reasoning_cfg}
             payload["reasoning"] = reasoning_cfg
 
-        for key, value in self.default_kwargs.items():
-            if key not in payload:
-                payload[key] = value
+        self._apply_default_kwargs(payload)
 
         return payload
 
-    def chat(self, messages: List[Dict[str, Any]], sampling_params: Dict[str, Any]) -> Tuple[str, Dict]:
-        data = self.chat_json(messages, sampling_params)
-        return self._extract_chat_text_and_usage(data)
-
-    def chat_json(self, messages: List[Dict[str, Any]], sampling_params: Dict[str, Any]) -> Dict[str, Any]:
-        payload = self._build_payload(messages, sampling_params)
-        return self._request_json_with_retry(payload)
-
     @staticmethod
     def _extract_chat_text_and_usage(data: Dict[str, Any]) -> Tuple[str, Dict]:
+        content, usage = BaseInference._extract_chat_text_and_usage(data)
         if "choices" not in data:
-            return "", {}
+            return content, usage
 
         message = data["choices"][0]["message"]
-        content = message.get("content")
-        usage = data.get("usage", {})
-
         reasoning = message.get("reasoning")
         if reasoning:
             usage["_reasoning_content"] = reasoning
@@ -247,16 +191,12 @@ class OpenRouterInference:
         if finish_reason:
             usage["_finish_reason"] = finish_reason
 
-        if isinstance(content, str):
-            return content, usage
-        if content is None:
-            return "", usage
-        return str(content), usage
-    
+        return content, usage
+
     def _request_json_with_retry(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Make API request with exponential backoff retry logic.
-        
+
         Retries on:
             - HTTP 429 (rate limit)
             - HTTP 500, 502, 503, 504, 524 (server errors)
@@ -267,19 +207,19 @@ class OpenRouterInference:
         last_error: Optional[BaseException] = None
         rate_limiter = GlobalRateLimiter()
         session = get_session()
-        
+
         for attempt in range(self.max_retries + 1):
             try:
                 # Apply rate limiting
                 rate_limiter.acquire()
-                
+
                 response = session.post(
                     self.API_URL,
                     headers=self.headers,
                     json=payload,
                     timeout=120,  # 2 minute timeout for long generations
                 )
-                
+
                 # Success
                 if response.status_code == 200:
                     # Handle malformed JSON responses
@@ -295,12 +235,12 @@ class OpenRouterInference:
                         # Exhausted retries
                         print(f"  [OpenRouter] Malformed JSON after {self.max_retries} retries. Returning empty output.")
                         return {}
-                    
+
                     # Check for provider errors returned as 200 (e.g., Xiaomi 524 timeout)
                     if "error" in data and "choices" not in data:
                         error_detail = data.get("error", data)
                         error_code = error_detail.get("code", 0) if isinstance(error_detail, dict) else 0
-                        
+
                         # Retry on provider timeouts/errors
                         if error_code in (524, 500, 502, 503, 504) or "timeout" in str(error_detail).lower():
                             last_error = Exception(f"Provider error: {error_detail}")
@@ -309,14 +249,14 @@ class OpenRouterInference:
                                 print(f"  [OpenRouter] Provider error {error_code}, retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries})")
                                 time.sleep(delay)
                                 continue
-                        
+
                         raise RuntimeError(f"OpenRouter returned error: {error_detail}")
-                    
+
                     # Check for valid response structure
                     if "choices" not in data:
                         error_detail = data.get("error", data)
                         raise RuntimeError(f"OpenRouter returned invalid response: {error_detail}")
-                    
+
                     content, usage = self._extract_chat_text_and_usage(data)
                     reasoning = usage.get("_reasoning_content")
                     finish_reason = usage.get("_finish_reason")
@@ -360,7 +300,7 @@ class OpenRouterInference:
                         )
 
                     return data
-                
+
                 # Rate limit or server error - retry (including 524 Cloudflare timeout)
                 if response.status_code in RETRYABLE_STATUS_CODES:
                     error_msg = f"HTTP {response.status_code}"
@@ -370,15 +310,15 @@ class OpenRouterInference:
                             error_msg = f"{error_msg}: {error_data['error']}"
                     except:
                         pass
-                    
+
                     last_error = Exception(error_msg)
-                    
+
                     if attempt < self.max_retries:
                         delay = self._calculate_backoff(attempt)
                         print(f"  [OpenRouter] {error_msg}, retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries})")
                         time.sleep(delay)
                         continue
-                
+
                 # Other HTTP errors: treat as fatal configuration/usage errors.
                 # We intentionally do NOT retry these.
                 if response.status_code in (401, 403):
@@ -392,7 +332,7 @@ class OpenRouterInference:
                 except Exception:
                     body = "<unreadable body>"
                 raise RuntimeError(f"OpenRouter HTTP {response.status_code}: {body}")
-                
+
             except requests.exceptions.RequestException as e:
                 # Broad catch for transient network/proxy failures:
                 # - Timeout / ReadTimeout
@@ -407,18 +347,7 @@ class OpenRouterInference:
                     print(f"  [OpenRouter] {type(e).__name__}, retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries})")
                     time.sleep(delay)
                     continue
-        
+
         # All retries exhausted - return empty output to allow simulation to continue
         print(f"  [OpenRouter] Request failed after {self.max_retries} retries: {last_error}. Returning empty output.")
         return {}
-    
-    def _calculate_backoff(self, attempt: int) -> float:
-        """
-        Calculate exponential backoff delay with jitter.
-        
-        Formula: min(max_delay, base_delay * 2^attempt) * (0.75 to 1.25 jitter)
-        """
-        delay = min(self.max_delay, self.base_delay * (2 ** attempt))
-        # Add ±25% jitter to prevent thundering herd
-        jitter = random.uniform(0.75, 1.25)
-        return delay * jitter

@@ -27,7 +27,7 @@ output_base: "${FSIM_OUTPUT_BASE}"
 search_db: ""
 
 # --- Answer Matching ---
-matching: "openrouter" # Options: "exact", "openrouter", "vllm"
+matching: "openrouter" # Options: "exact", "openrouter"
 matcher: "${FSIM_MATCHER_MODEL}"
 matcher_gpu_mem: 0.0
 max_model_len: 8192

@@ -8,20 +8,15 @@ Endpoint: POST https://api.deepseek.com/v1/chat/completions
 Auth: Bearer <DEEPSEEK_API_KEY>
 """
 
-import os
 import time
-import random
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 
-try:
-    import requests
-except ImportError:
-    raise ImportError(
-        "requests module not found. Install with: pip install requests"
-    )
+import requests
+
+from inference.base import BaseInference
 
 
-class DeepSeekInference:
+class DeepSeekInference(BaseInference):
     """
     DeepSeek API inference provider.
 
@@ -34,45 +29,9 @@ class DeepSeekInference:
     """
 
     API_URL = "https://api.deepseek.com/v1/chat/completions"
+    API_KEY_ENV = "DEEPSEEK_API_KEY"
 
-    def __init__(self,
-                 model: str,
-                 api_key: str = None,
-                 max_retries: int = 3,
-                 base_delay: float = 10.0,
-                 max_delay: float = 60.0,
-                 **kwargs):
-        """
-        Initialize DeepSeek inference provider.
-
-        Args:
-            model: Model identifier (e.g., "deepseek-chat", "deepseek-reasoner")
-            api_key: DeepSeek API key (defaults to DEEPSEEK_API_KEY env var)
-            max_retries: Maximum retry attempts on transient errors (default 3)
-            base_delay: Base delay in seconds for exponential backoff (default 10.0)
-            max_delay: Maximum delay cap in seconds (default 60.0)
-            **kwargs: Additional default parameters for requests
-        """
-        self.model = model
-        self.model_name = model  # For compatibility with provider interface
-        self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
-
-        if not self.api_key:
-            raise ValueError(
-                "DeepSeek API key required. Set DEEPSEEK_API_KEY or pass api_key."
-            )
-
-        self.max_retries = min(3, max(0, int(max_retries)))
-        self.base_delay = base_delay
-        self.max_delay = max_delay
-        kwargs.pop("enable_caching", None)
-        self.default_kwargs = kwargs
-
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
+    def _post_init(self) -> None:
         self._session: Optional[requests.Session] = None
 
     def _get_session(self) -> requests.Session:
@@ -123,49 +82,10 @@ class DeepSeekInference:
             "stream": False,
         }
 
-        param_mapping = {
-            "temperature": "temperature",
-            "max_tokens": "max_tokens",
-            "top_p": "top_p",
-            "top_k": "top_k",
-            "frequency_penalty": "frequency_penalty",
-            "presence_penalty": "presence_penalty",
-            "stop": "stop",
-            "tools": "tools",
-            "tool_choice": "tool_choice",
-        }
-        for local_key, api_key in param_mapping.items():
-            if local_key in sampling_params:
-                payload[api_key] = sampling_params[local_key]
-
-        for key, value in self.default_kwargs.items():
-            if key not in payload:
-                payload[key] = value
+        self._apply_param_mapping(payload, sampling_params)
+        self._apply_default_kwargs(payload)
 
         return payload
-
-    def chat(self, messages: List[Dict[str, Any]], sampling_params: Dict[str, Any]) -> Tuple[str, Dict]:
-        data = self.chat_json(messages, sampling_params)
-        return self._extract_chat_text_and_usage(data)
-
-    def chat_json(self, messages: List[Dict[str, Any]], sampling_params: Dict[str, Any]) -> Dict[str, Any]:
-        payload = self._build_payload(messages, sampling_params)
-        return self._request_json_with_retry(payload)
-
-    @staticmethod
-    def _extract_chat_text_and_usage(data: Dict[str, Any]) -> Tuple[str, Dict]:
-        if "choices" not in data:
-            return "", {}
-
-        message = data["choices"][0]["message"]
-        content = message.get("content")
-        usage = data.get("usage", {})
-
-        if isinstance(content, str):
-            return content, usage
-        if content is None:
-            return "", usage
-        return str(content), usage
 
     def _request_json_with_retry(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -250,8 +170,3 @@ class DeepSeekInference:
 
         print(f"  [DeepSeek] Request failed after {self.max_retries} retries: {last_error}. Returning empty output.")
         return {}
-
-    def _calculate_backoff(self, attempt: int) -> float:
-        delay = min(self.max_delay, self.base_delay * (2 ** attempt))
-        jitter = random.uniform(0.75, 1.25)
-        return delay * jitter

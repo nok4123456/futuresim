@@ -4,6 +4,7 @@ BasicAgent: Main agent class for LLM-based forecasting.
 Uses Chat Completions tool-calling for all action and structured-memory loops.
 """
 
+import json
 from datetime import date
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -178,6 +179,7 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
         self._timer.reset()
         self._timer.start_day()
         self._day_qids = set()  # Track QIDs the agent interacts with today
+        self._day_evidence = []  # Search evidence + prediction reasoning for the day
         self._context_limit_hit = False
         self._require_chat_tools()
 
@@ -218,7 +220,11 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
         self._timer.end_day()
         if self.config.memory_dir:
             self._timer.save_day_stats(self.config.memory_dir, current_date)
-        
+
+        # Flush daily evidence (search results + prediction reasoning) to output log
+        if self._day_evidence:
+            self._log_daily_evidence(current_date)
+
         # Signal day completion
         forecast_interface.next_day()
         
@@ -350,6 +356,7 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
             search_chunk_tokens=self._search_handler.chunk_tokens,
             enable_memory=has_structured_memory,
             enable_mem_df=has_active_memory,
+            search_tool_type=self._search_handler.search_tool_type,
         )
         budget.bootstrap_context({"messages": messages, "tools": tools})
 
@@ -831,7 +838,22 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
 
     def _flush_warmup_raw_logs(self) -> None:
         self._output_logger.flush_warmup_raw()
-    
+
+    def _log_daily_evidence(self, current_date: date) -> None:
+        """Write accumulated daily evidence (search snippets + prediction reasoning)
+        to the raw daily output log so the dashboard builder can display it."""
+        if self._log_date is None:
+            return
+        for item in self._day_evidence:
+            evidence_response = json.dumps(item, ensure_ascii=False)
+            metadata = {
+                "phase": f"evidence_{item.get('type', 'unknown')}",
+                "qid": item.get("qid"),
+            }
+            self._output_logger.log_model_output(
+                current_date, item, evidence_response, metadata,
+            )
+
     # =========================================================================
     # Forced daily submit
     # =========================================================================

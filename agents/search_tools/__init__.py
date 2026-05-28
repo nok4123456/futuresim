@@ -7,6 +7,7 @@ Provides abstract search interface and implementations for different backends.
 from .base import BaseSearchTool, SearchResult, Article
 from .chunking import chunk_text, chunk_article
 from .google_search import GoogleNewsSearchTool, create_search_tool
+from .polymarket import PolymarketTool
 
 __all__ = [
     'BaseSearchTool',
@@ -15,5 +16,6 @@ __all__ = [
     'chunk_text',
     'chunk_article',
     'GoogleNewsSearchTool',
+    'PolymarketTool',
     'create_search_tool',
 ]

@@ -33,7 +33,6 @@ from environment.env import SimulationEnvironment, SimForecastInterface
 from environment.matcher_cache import resolve_sim_matcher_cache_path
 from agents.basicAgent import BasicAgent, AgentConfig
 from agents.allQAgent import AllQAgent, AllQDailyAgent
-from agents.qwenAgent import QwenBasicAgent, QwenAllQAgent
 
 
 # Default paths
@@ -602,23 +601,6 @@ def create_agents_from_config(config: dict, args, output_dir: str, search_tool=N
                 search_tool=search_tool,
                 start_date=args.sim_start_date  # Passed from create_agents call
             )
-        elif scaffold == 'qwenbasic':
-            agent = QwenBasicAgent(
-                agent_id=agent_id,
-                inference_provider=inference_provider,
-                config=agent_config,
-                model_name=model,
-                search_tool=search_tool
-            )
-        elif scaffold == 'qwenallq':
-            agent = QwenAllQAgent(
-                agent_id=agent_id,
-                inference_provider=inference_provider,
-                config=agent_config,
-                model_name=model,
-                search_tool=search_tool,
-                start_date=args.sim_start_date
-            )
         elif scaffold == 'allqd':
             agent = AllQDailyAgent(
                 agent_id=agent_id,
@@ -631,7 +613,7 @@ def create_agents_from_config(config: dict, args, output_dir: str, search_tool=N
         else:
             raise ValueError(
                 f"Unknown scaffold: {scaffold}. Only 'basic', 'allQ', 'allqd', "
-                "'qwenbasic', 'qwenallq', and 'minimalHarness' are supported."
+                "'minimalHarness' are supported."
             )
         
         agent.agent_output_dir = agent_dir
@@ -697,8 +679,8 @@ def main():
     parser.add_argument("--no_parallel", action="store_true",
                        help="Disable parallel agent execution")
     # Single-agent settings (used when no config file)
-    parser.add_argument("--scaffold", choices=["basic", "allQ", "allq", "allqd", "qwenbasic", "qwenallq", "minimalHarness"], default="basic",
-                       help="Agent scaffold to use (default: basic). Qwen wrappers are available as qwenbasic/qwenallq.")
+    parser.add_argument("--scaffold", choices=["basic", "allQ", "allq", "allqd", "minimalHarness"], default="basic",
+                       help="Agent scaffold to use (default: basic).")
     parser.add_argument("--provider", choices=["openrouter", "deepseek"], default="openrouter",
                        help="Inference provider: 'openrouter' (API) or 'deepseek' (API)")
     parser.add_argument("--openrouter_model", default=None,
@@ -1110,23 +1092,6 @@ def main():
                 search_tool=search_tool,
                 start_date=sim_start
             )
-        elif args.scaffold == 'qwenbasic':
-            agent = QwenBasicAgent(
-                agent_id=agent_id,
-                inference_provider=inference_provider,
-                config=agent_config,
-                model_name=model_name,
-                search_tool=search_tool
-            )
-        elif args.scaffold == 'qwenallq':
-            agent = QwenAllQAgent(
-                agent_id=agent_id,
-                inference_provider=inference_provider,
-                config=agent_config,
-                model_name=model_name,
-                search_tool=search_tool,
-                start_date=sim_start
-            )
         elif args.scaffold == 'allqd':
             agent = AllQDailyAgent(
                 agent_id=agent_id,
@@ -1158,7 +1123,7 @@ def main():
         else:
             raise ValueError(
                 f"Unknown scaffold: {args.scaffold}. Only 'basic', 'allQ', 'allqd', "
-                "'qwenbasic', 'qwenallq', and 'minimalHarness' are supported."
+                "'minimalHarness' are supported."
             )
         agent.agent_output_dir = getattr(agent, "agent_output_dir", agent_dir)
         agents.append(agent)

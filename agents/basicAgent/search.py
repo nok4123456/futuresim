@@ -36,6 +36,20 @@ class SearchHandler:
         if self._search_tool is None:
             return None
         return getattr(self._search_tool, "chunk_tokens", None)
+
+    @property
+    def search_tool_type(self) -> str:
+        """Return a short label for the active search backend (google, polymarket, lancedb, none)."""
+        if self._search_tool is None:
+            return "none"
+        name = type(self._search_tool).__name__
+        if "Polymarket" in name:
+            return "polymarket"
+        if "Google" in name:
+            return "google"
+        if "LanceDB" in name:
+            return "lancedb"
+        return name.lower()
     
     def count_articles(self, min_date: Optional[date] = None, max_date: Optional[date] = None) -> Optional[int]:
         if not self.is_available:
@@ -67,13 +81,13 @@ class SearchHandler:
         search_type: str = "hybrid",
         min_date: Optional[date] = None,
         max_date: Optional[date] = None,
-    ) -> Tuple[str, Optional[str]]:
+    ) -> Tuple[str, Optional[str], List[SearchResult]]:
         if not self.is_available:
-            return "", "Search not available"
+            return "", "Search not available", []
         current_date = self._effective_current_date()
         if not current_date:
-            return "", "Current date not set"
-        
+            return "", "Current date not set", []
+
         # Never search past the effective current day (+ optional cutoff).
         # Warmup can replace the shared sim day per-thread with a question-specific day.
         allowed_max_date = current_date - timedelta(days=self._search_cutoff_days)
@@ -88,7 +102,7 @@ class SearchHandler:
                     f"Note: maximum allowed search date is {allowed_max_date.isoformat()}. "
                     f"Your requested to-date {max_date.isoformat()} was capped."
                 )
-        
+
         # Validate min_date doesn't exceed max_date (prevent leakage)
         if min_date and min_date > effective_max_date:
             info_lines.append(
@@ -96,7 +110,7 @@ class SearchHandler:
                 f"{effective_max_date.isoformat()}, so from-date was ignored."
             )
             min_date = None  # Ignore invalid min_date
-        
+
         try:
             results = self._search_tool.search(
                 query, max_results, effective_max_date, search_type, min_date,
@@ -105,14 +119,14 @@ class SearchHandler:
             if not results:
                 base = "No articles found matching your query."
                 if info_lines:
-                    return "\n".join(info_lines + ["", base]), None
-                return base, None
+                    return "\n".join(info_lines + ["", base]), None, []
+                return base, None, []
             formatted = self._format_results(results)
             if info_lines:
-                return "\n".join(info_lines + ["", formatted]), None
-            return formatted, None
+                return "\n".join(info_lines + ["", formatted]), None, results
+            return formatted, None, results
         except Exception as e:
-            return "", f"Search error: {e}"
+            return "", f"Search error: {e}", []
     
     def _format_results(self, results: List[SearchResult]) -> str:
         lines = [f"Found {len(results)} relevant article chunk(s):\n"]

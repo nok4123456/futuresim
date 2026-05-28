@@ -164,7 +164,7 @@ def create_search_tool(search_db: str = "", embedding_model=None,
     """Factory: return the appropriate search tool based on configuration.
 
     Resolution order:
-    1. Environment variable FSIM_SEARCH_TOOL ("google" / "lancedb")
+    1. Environment variable FSIM_SEARCH_TOOL ("google" / "polymarket" / "lancedb")
     2. Explicit search_tool_type argument
     3. Default: LanceDB if search_db is set, otherwise None
     """
@@ -177,6 +177,12 @@ def create_search_tool(search_db: str = "", embedding_model=None,
         if not tool.is_available:
             print("  Warning: SERPER_API_KEY not set — Google search disabled.")
             return None
+        return tool
+
+    if effective == "polymarket":
+        from agents.search_tools.polymarket import PolymarketTool
+        print("  Search tool: Polymarket (Gamma API)")
+        tool = PolymarketTool()
         return tool
 
     # Default: LanceDB

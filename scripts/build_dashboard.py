@@ -28,6 +28,15 @@ try:
 except ImportError:
     sys.exit("requests module required. Install: pip install requests")
 
+# Add project root to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from pathing import load_repo_env, REPO_ROOT as _REPO_ROOT
+
+load_repo_env(_REPO_ROOT)
+
+from inference.deepseek import DeepSeekInference
+
 
 # ===================================================================
 # Polymarket price history via Gamma API trend data
@@ -274,7 +283,7 @@ def run_futuresim(dataset_path: Path, start_date: str, end_date: str, *,
                   provider: str = "deepseek", model: str = "deepseek-v4-flash",
                   matching: str = "exact", sim_name: str = "dashboard",
                   max_actions: int = 3, temperature: float = 0.7,
-                  force_submit: bool = True, timeout: int = 1800,
+                  force_submit: bool = False, timeout: int = 1800,
                   resolution_end: Optional[str] = None) -> Optional[str]:
     cmd = [
         sys.executable, str(RUN_FORECAST_SCRIPT),
@@ -354,11 +363,12 @@ def extract_daily_data(output_dir: str) -> List[dict]:
                     predictions[sim_date] = {"prob_yes": float(yes_p),
                                               "outcomes": outcomes}
 
-    # Extract reasoning from raw daily log
+    # Extract reasoning and sentiment from raw daily log
     if agent_dir:
         raw_log = os.path.join(agent_dir, "model_raw_daily.jsonl")
         if os.path.exists(raw_log):
             _extract_reasoning(raw_log, predictions)
+            _extract_sentiment_scores(raw_log, predictions)
 
     # Build daily list
     result = []
@@ -369,6 +379,7 @@ def extract_daily_data(output_dir: str) -> List[dict]:
             "prob_yes": entry.get("prob_yes", 0),
             "reasoning": entry.get("reasoning", ""),
             "searches": entry.get("searches", []),
+            "sentiment_score": entry.get("sentiment_score"),
         })
     return result
 
@@ -450,6 +461,47 @@ def _extract_reasoning(raw_log_path: str, predictions: Dict[str, dict]):
         predictions[sim_date]["searches"] = searches
 
 
+def _extract_sentiment_scores(raw_log_path: str, predictions: Dict[str, dict]):
+    """Extract market sentiment scores from evidence log entries (type=sentiment)."""
+    try:
+        with open(raw_log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line.strip())
+                except json.JSONDecodeError:
+                    continue
+                sim_date = entry.get("sim_date", "")
+                # Evidence items are logged with the evidence dict as prompt, and
+                # the response field contains the JSON string of the evidence item.
+                # Check both the response field (for evidence_* phase entries) and
+                # direct metadata.
+                meta = entry.get("metadata", {})
+                phase = meta.get("phase", "")
+                if phase == "evidence_sentiment":
+                    try:
+                        resp = entry.get("response", "")
+                        if isinstance(resp, str):
+                            evidence = json.loads(resp)
+                        else:
+                            evidence = resp
+                        if isinstance(evidence, dict) and evidence.get("type") == "sentiment":
+                            score = evidence.get("market_sentiment_score")
+                            if score is not None:
+                                predictions.setdefault(sim_date, {})["sentiment_score"] = float(score)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        continue
+                # Also try extracting from the prompt field directly (some paths)
+                prompt = entry.get("prompt", "")
+                if isinstance(prompt, dict) and prompt.get("type") == "sentiment":
+                    score = prompt.get("market_sentiment_score")
+                    if score is not None and sim_date:
+                        predictions.setdefault(sim_date, {})["sentiment_score"] = float(score)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"  [Sentiment] Warning: error reading sentiment scores: {e}")
+
+
 # ===================================================================
 # Polymarket history
 # ===================================================================
@@ -471,21 +523,25 @@ def load_pm_history(slug: str) -> Dict[str, float]:
     return history
 
 
-def build_pm_datasets(history: Dict[str, float], dates: List[str],
-                       current_prob: float) -> Tuple[List[Optional[float]], List[float]]:
+def build_pm_datasets(csv_history: Dict[str, float], gamma_history: Dict[str, float],
+                       dates: List[str]) -> Tuple[List[Optional[float]], List[Optional[float]]]:
     """Build two Polymarket chart series:
-    - snapshots: dot markers only at dates with recorded data (nulls elsewhere)
-    - current_line: a flat reference line at the current probability
+    - snapshots: dot markers from CSV snapshots (nulls elsewhere)
+    - trend_line: Gamma-estimated daily values as a dashed line (nulls where no estimate)
     """
     sorted_dates = sorted(set(dates))
     snapshots: List[Optional[float]] = []
+    trend_line: List[Optional[float]] = []
     for d in sorted_dates:
-        if d in history:
-            snapshots.append(history[d] * 100)
+        if d in csv_history:
+            snapshots.append(csv_history[d] * 100)
         else:
-            snapshots.append(None)  # null = no marker on Chart.js
-    current_line = [current_prob * 100] * len(sorted_dates)
-    return snapshots, current_line
+            snapshots.append(None)
+        if d in gamma_history:
+            trend_line.append(gamma_history[d] * 100)
+        else:
+            trend_line.append(None)
+    return snapshots, trend_line
 
 
 def record_pm_snapshot(slug: str) -> Optional[float]:
@@ -508,12 +564,349 @@ def record_pm_snapshot(slug: str) -> Optional[float]:
 
 
 # ===================================================================
+# Sentiment / Emotional Analysis (rule-based)
+# ===================================================================
+
+def generate_sentiment_analysis(daily_data: List[dict],
+                                csv_history: Dict[str, float]) -> str:
+    """Produce a rule-based emotional analysis of the market over time.
+
+    Uses daily sentiment scores, price movement, and agent-market gaps
+    to generate a narrative similar to:
+      "Polymarket shows 'overly pessimistic' signals..."
+    """
+    if not daily_data:
+        return ""
+
+    # Collect data across the date range
+    scores = []
+    pm_prices = []
+    agent_prices = []
+    dates = []
+    for d in daily_data:
+        sent = d.get("sentiment_score")
+        agent_p = d.get("prob_yes")
+        pm_p = csv_history.get(d["date"])
+        dates.append(d["date"])
+        scores.append(sent)
+        pm_prices.append(pm_p)
+        agent_prices.append(agent_p)
+
+    has_scores = any(s is not None for s in scores)
+    has_pm = any(p is not None for p in pm_prices)
+
+    if not has_scores and not has_pm:
+        return ""
+
+    paragraphs = []
+
+    # ── 1. Overall sentiment verdict ──────────────────────────────
+    if has_scores:
+        valid_scores = [s for s in scores if s is not None]
+        if valid_scores:
+            avg_score = sum(valid_scores) / len(valid_scores)
+            last_score = valid_scores[-1]
+            if avg_score <= -0.5:
+                verdict = "overly pessimistic"
+            elif avg_score >= 0.5:
+                verdict = "overly optimistic"
+            elif avg_score <= -0.2:
+                verdict = "slightly pessimistic"
+            elif avg_score >= 0.2:
+                verdict = "slightly optimistic"
+            else:
+                verdict = "balanced"
+
+            recent_scores = valid_scores[-3:] if len(valid_scores) >= 3 else valid_scores
+            if all(s <= -0.7 for s in recent_scores):
+                intensity = "strong and persistent"
+            elif all(s <= -0.5 for s in recent_scores):
+                intensity = "consistent"
+            elif len(recent_scores) >= 2 and recent_scores[-1] <= -0.6:
+                intensity = "intensifying"
+            else:
+                intensity = "moderate"
+
+            paragraphs.append(
+                f"Sentiment Analysis Result: Polymarket shows \"{verdict}\" tendencies "
+                f"(average sentiment score: {avg_score:+.2f}, last score: {last_score:+.2f}). "
+                f"The signal is {intensity}."
+            )
+
+            # Consistent extreme periods
+            extreme_streaks = _find_extreme_streaks(zip(dates, valid_scores))
+            if extreme_streaks:
+                for start_d, end_d, label in extreme_streaks:
+                    paragraphs.append(
+                        f"From {start_d} to {end_d}, sentiment scores were consistently "
+                        f"{label}, indicating a sustained emotional bias in the market "
+                        f"during this period."
+                    )
+
+    # ── 2. Extreme price level analysis ────────────────────────────
+    if has_pm:
+        valid_pm = [(d, p) for d, p in zip(dates, pm_prices) if p is not None]
+        if valid_pm:
+            first_pm = valid_pm[0][1]
+            last_pm = valid_pm[-1][1]
+            max_pm = max(p for _, p in valid_pm)
+            min_pm = min(p for _, p in valid_pm)
+
+            if last_pm < 0.01:
+                paragraphs.append(
+                    f"Extreme price ({last_pm*100:.1f}%) is itself a strong emotional indicator. "
+                    f"When a market prices below 1%, it typically represents a \"near-impossible\" "
+                    f"consensus. Such extreme values often accompany systematic pessimism, but "
+                    f"they are also fertile ground for irrational sentiment — even mildly "
+                    f"positive news can cause prices to multiply."
+                )
+            elif last_pm > 0.99:
+                paragraphs.append(
+                    f"Extreme price ({last_pm*100:.1f}%) signals near-certainty among "
+                    f"market participants. Prices above 99% often reflect complacency "
+                    f"or euphoria — the market believes the outcome is guaranteed."
+                )
+
+            # Price range
+            pm_range = max_pm - min_pm
+            if pm_range > 0.15:
+                paragraphs.append(
+                    f"The price has swung {pm_range*100:.0f} points over the observation "
+                    f"window (from {min_pm*100:.1f}% to {max_pm*100:.1f}%)."
+                )
+
+    # ── 3. Price crash / trend detection ───────────────────────────
+    if has_pm:
+        valid_pm_dates = [(d, p) for d, p in zip(dates, pm_prices) if p is not None]
+        if len(valid_pm_dates) >= 3:
+            first_price = valid_pm_dates[0][1]
+            last_price = valid_pm_dates[-1][1]
+            price_drop = first_price - last_price
+            if price_drop > 0.10:
+                paragraphs.append(
+                    f"The price collapse process reveals panic-style selling: "
+                    f"from {first_price*100:.1f}% at the start to {last_price*100:.1f}% "
+                    f"at the end — a drop of {price_drop*100:.1f} percentage points. "
+                    f"Without accompanying catastrophic news in the agent's search results, "
+                    f"this likely reflects emotional selling (e.g., original bullish funds "
+                    f"exiting, or a \"Google can't win\" narrative taking hold)."
+                )
+            elif price_drop < -0.10:
+                paragraphs.append(
+                    f"The price surged from {first_price*100:.1f}% to {last_price*100:.1f}% "
+                    f"(+{abs(price_drop)*100:.1f} points). Without proportional news, "
+                    f"this may indicate FOMO-driven buying or herd behavior."
+                )
+
+    # ── 4. Evidence the market may be ignoring ─────────────────────
+    agent_gaps = []
+    for d in daily_data:
+        agent_p = d.get("prob_yes")
+        pm_p = csv_history.get(d["date"])
+        if agent_p is not None and pm_p is not None:
+            gap = agent_p - pm_p
+            if abs(gap) > 0.15:
+                agent_gaps.append((d["date"], gap, d.get("reasoning", "")))
+
+    if agent_gaps:
+        # Find unique reasoning themes in gap days
+        gap_themes = []
+        for _, gap, reasoning in agent_gaps[-3:]:
+            # Extract key phrases from reasoning (first 200 chars)
+            snippet = reasoning[:200] if reasoning else ""
+            if snippet and len(snippet) > 20:
+                gap_themes.append(snippet)
+
+        if gap_themes:
+            paragraphs.append(
+                f"The agent found evidence that the market appears to be ignoring. "
+                f"On days with large agent-market gaps (>15 points), the agent's "
+                f"reasoning included themes such as: "
+                + "; ".join(f"\"{t[:100]}...\"" for t in gap_themes[:2])
+                + ". If the market is not incorporating this information, it may "
+                + "represent a genuine information edge rather than pure sentiment."
+            )
+
+    if not paragraphs:
+        return ""
+
+    # Format as the example shows
+    lines = ["Emotion Analysis Result: Polymarket shows the following signals:\n"]
+    for i, p in enumerate(paragraphs):
+        lines.append(p)
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _find_extreme_streaks(date_score_pairs) -> List[Tuple[str, str, str]]:
+    """Find consecutive periods where sentiment scores were extreme."""
+    streaks = []
+    current_start = None
+    current_end = None
+    current_label = None
+    count = 0
+
+    for d, s in date_score_pairs:
+        if s is None:
+            continue
+        if s <= -0.7:
+            label = "overly pessimistic (<= -0.7)"
+        elif s >= 0.7:
+            label = "overly optimistic (>= +0.7)"
+        elif s <= -0.5:
+            label = "moderately pessimistic"
+        elif s >= 0.5:
+            label = "moderately optimistic"
+        else:
+            label = None
+
+        if label is None or label != current_label:
+            if current_start and count >= 2:
+                streaks.append((current_start, current_end, current_label))
+            current_start = d if label else None
+            current_end = d if label else None
+            current_label = label
+            count = 1 if label else 0
+        else:
+            current_end = d
+            count += 1
+
+    if current_start and count >= 2:
+        streaks.append((current_start, current_end, current_label))
+
+    return streaks
+
+
+# ===================================================================
+# AI Narrative Summary
+# ===================================================================
+
+def generate_ai_summary(market: dict, daily_data: List[dict],
+                        csv_history: Dict[str, float],
+                        model: str = "deepseek-v4-flash") -> str:
+    """Use an LLM to produce a plain-English narrative explaining:
+    - What evidence the AI agent relied on
+    - Why the agent's view differs from (or matches) Polymarket
+    - Key turning points in the agent's predictions over time
+    """
+    if not daily_data:
+        return ""
+
+    title = market.get("question", market.get("title", "Unknown"))
+    current_pm = PolymarketClient.get_current_probability(market) or 0
+
+    # Build a compact day-by-day table for the prompt
+    day_lines = []
+    for d in daily_data:
+        agent_p = d["prob_yes"]
+        pm_raw = csv_history.get(d["date"])
+        pm_p = pm_raw if pm_raw is not None else None
+        gap = (agent_p - pm_p) if pm_p is not None else None
+        reasoning = d.get("reasoning", "")[:300]
+        searches = d.get("searches", [])[:3]
+        sentiment = d.get("sentiment_score")
+        gap_str = f"{gap:+.1%}" if gap is not None else "no PM data"
+        pm_str = f"{pm_p:.1%}" if pm_p is not None else "—"
+        sent_str = f" | sentiment={sentiment:+.2f}" if sentiment is not None else ""
+        day_lines.append(
+            f"  {d['date']}: agent={agent_p:.1%} | polymarket={pm_str} | "
+            f"gap={gap_str}{sent_str}\n"
+            f"    evidence: {reasoning or '(none)'}\n"
+            f"    searches: {', '.join(searches) if searches else '(none)'}"
+        )
+
+    days_text = "\n".join(day_lines)
+
+    # Gather sentiment context if available
+    sentiment_context = ""
+    has_sentiment = any(d.get("sentiment_score") is not None for d in daily_data)
+    if has_sentiment:
+        scores = [d.get("sentiment_score") for d in daily_data if d.get("sentiment_score") is not None]
+        if scores:
+            sentiment_context = (
+                f"\nMarket sentiment scores range from {min(scores):+.2f} to {max(scores):+.2f} "
+                f"(where -1.0 = overly pessimistic, +1.0 = overly optimistic, 0.0 = balanced)."
+            )
+
+    prompt = f"""You are a forecasting analyst explaining AI agent predictions to a general audience.
+
+MARKET QUESTION: {title}
+Current Polymarket probability: {current_pm:.1%}{sentiment_context}
+
+Below is a day-by-day log of an AI forecasting agent's predictions compared to Polymarket odds:
+
+{days_text}
+
+Write a 2-3 paragraph plain-English narrative (like a news analyst would) that explains:
+
+1. EVIDENCE: What information and evidence did the AI agent rely on to form its view? Summarize the key facts, searches, or reasoning the agent used.
+
+2. THE GAP: Why does the AI agent's probability differ from Polymarket's (or agree with it)? What specific evidence or perspective explains the difference? Point to concrete examples from the log above.
+
+3. TREND: Did the agent's opinion shift over time? If so, what new information caused the shift?
+
+4. SENTIMENT: Based on the sentiment scores, was the market emotionally skewed (overly pessimistic or optimistic)? Did the agent detect and exploit this?
+
+Keep it concise and readable. Avoid jargon. Use specific numbers from the log to support your points."""
+
+    try:
+        inference = DeepSeekInference(model, max_retries=1, base_delay=2, max_delay=10)
+        text, _ = inference.chat(
+            messages=[{"role": "user", "content": prompt}],
+            sampling_params={"temperature": 0.3, "max_tokens": 800},
+        )
+        return text.strip()
+    except Exception as e:
+        print(f"  [Summary] LLM call failed: {e}")
+        return ""
+
+
+# ===================================================================
 # HTML Dashboard generator
 # ===================================================================
 
+def _summary_card(summary_text: str) -> str:
+    """Build the AI narrative summary card HTML."""
+    if not summary_text:
+        return ""
+    escaped = summary_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Convert markdown-style **bold** to <strong> tags, and newline-separated
+    # paragraphs to <p> tags for readability
+    import re
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+    paragraphs = escaped.split("\n\n")
+    paras_html = "\n".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs if p.strip())
+    return f"""
+<div class="card">
+    <h2>AI Analyst Summary</h2>
+    <div class="summary-text">
+        {paras_html}
+    </div>
+</div>"""
+
+
+def _sentiment_card(sentiment_text: str) -> str:
+    """Build the sentiment / emotional analysis card HTML."""
+    if not sentiment_text:
+        return ""
+    escaped = sentiment_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    import re
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+    paragraphs = escaped.split("\n\n")
+    paras_html = "\n".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs if p.strip())
+    return f"""
+<div class="card">
+    <h2>Market Sentiment & Emotional Analysis</h2>
+    <div class="summary-text">
+        {paras_html}
+    </div>
+</div>"""
+
+
 def generate_dashboard(market: dict, daily_data: List[dict],
-                       pm_history: Dict[str, float], output_path: Path,
-                       current_pm_prob: float):
+                       csv_history: Dict[str, float], gamma_history: Dict[str, float],
+                       output_path: Path, current_pm_prob: float,
+                       ai_summary: str = "", sentiment_analysis: str = ""):
     """Build a standalone HTML dashboard file."""
     title = market.get("question", market.get("title", "Polymarket Market"))
     slug = market.get("slug", "unknown")
@@ -521,22 +914,31 @@ def generate_dashboard(market: dict, daily_data: List[dict],
     # Prepare chart data
     labels = [d["date"] for d in daily_data]
     agent_data = [d["prob_yes"] * 100 for d in daily_data]
-    pm_snapshots, pm_current_line = build_pm_datasets(pm_history, labels, current_pm_prob)
+    pm_snapshots, pm_trend_line = build_pm_datasets(csv_history, gamma_history, labels)
 
-    # Build a lookup for the detail table
+    # Collect sentiment scores for display
+    has_sentiment = any(d.get("sentiment_score") is not None for d in daily_data)
+
+    # Build a lookup for the detail table (prefer CSV snapshots, fall back to Gamma)
     pm_lookup = {}
-    for i, d in enumerate(labels):
-        if pm_snapshots[i] is not None:
-            pm_lookup[d] = pm_snapshots[i] / 100
+    for d in labels:
+        if d in csv_history:
+            pm_lookup[d] = csv_history[d]
+        elif d in gamma_history:
+            pm_lookup[d] = gamma_history[d]
         else:
-            pm_lookup[d] = current_pm_prob
+            pm_lookup[d] = None  # No Polymarket data for this date
 
-    # Build reasoning rows
+    # Build reasoning rows with full text in data attribute for tooltip
     reasoning_rows = ""
     for d in daily_data:
         agent_p = d["prob_yes"] * 100
-        pm_p = (pm_lookup.get(d["date"], current_pm_prob) or 0) * 100
-        diff = agent_p - pm_p
+        pm_raw = pm_lookup.get(d["date"])
+        pm_p = pm_raw * 100 if pm_raw is not None else None
+        if pm_p is not None:
+            diff = agent_p - pm_p
+        else:
+            diff = None
         searches = d.get("searches", [])
         search_str = ", ".join(searches[:3]) if searches else ""
         reasoning = d.get("reasoning", "")
@@ -544,17 +946,57 @@ def generate_dashboard(market: dict, daily_data: List[dict],
             reasoning = f"Searched: {search_str}"
         elif not reasoning:
             reasoning = "No reasoning recorded."
-        pm_is_snapshot = d["date"] in pm_history
-        pm_label = f"{pm_p:.1f}%" + (" *" if pm_is_snapshot else "")
-        diff_class = "positive" if diff > 0 else "negative"
+        pm_is_snapshot = d["date"] in csv_history
+        if pm_p is not None:
+            pm_label = f"{pm_p:.1f}%"
+            if pm_is_snapshot:
+                pm_label += " *"
+        else:
+            pm_label = "—"
+        if diff is not None:
+            diff_class = "positive" if diff > 0 else "negative" if diff < 0 else "neutral"
+            diff_str = f"{diff:+.1f}%"
+        else:
+            diff_class = "neutral"
+            diff_str = "—"
+        # Sentiment score cell
+        sent_score = d.get("sentiment_score")
+        if sent_score is not None:
+            if sent_score <= -0.5:
+                sent_class = "negative"
+                sent_emoji = "&#128553;"  # weary face
+            elif sent_score <= -0.2:
+                sent_class = "sentiment-mild-bear"
+                sent_emoji = "&#128542;"  # disappointed
+            elif sent_score >= 0.5:
+                sent_class = "positive"
+                sent_emoji = "&#128513;"  # grinning
+            elif sent_score >= 0.2:
+                sent_class = "sentiment-mild-bull"
+                sent_emoji = "&#128522;"  # smiling
+            else:
+                sent_class = "neutral"
+                sent_emoji = "&#128528;"  # neutral face
+            sent_str = f"{sent_score:+.2f}"
+        else:
+            sent_class = "neutral"
+            sent_str = "—"
+            sent_emoji = ""
+
+        # Escape reasoning for HTML attribute
+        reasoning_escaped = reasoning.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
+        sent_cell = f'<td class="{sent_class}">{sent_emoji} {sent_str}</td>' if has_sentiment else ""
         reasoning_rows += f"""
         <tr>
             <td>{d['date']}</td>
             <td>{pm_label}</td>
             <td>{agent_p:.1f}%</td>
-            <td class=\"{diff_class}\">{diff:+.1f}%</td>
-            <td class=\"reasoning\">{reasoning[:120]}{'...' if len(reasoning) > 120 else ''}</td>
+            <td class="{diff_class}">{diff_str}</td>
+            {sent_cell}
+            <td class="reasoning" data-full="{reasoning_escaped}">{reasoning[:200]}{'...' if len(reasoning) > 200 else ''}</td>
         </tr>"""
+
+    has_trend = any(v is not None for v in pm_trend_line)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -572,20 +1014,24 @@ h1 {{ font-size: 1.5rem; font-weight: 600; margin-bottom: 4px; }}
 .card {{ background: #1e293b; border-radius: 12px; padding: 24px; margin-bottom: 24px;
          border: 1px solid #334155; }}
 .card h2 {{ font-size: 1.1rem; margin-bottom: 16px; color: #cbd5e1; }}
-.chart-container {{ height: 360px; position: relative; }}
+.chart-container {{ min-height: 420px; height: 55vh; position: relative; }}
+.card.scrollable {{ max-height: 60vh; overflow-y: auto; }}
 table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
 th {{ text-align: left; padding: 10px 12px; border-bottom: 2px solid #475569;
-      color: #94a3b8; font-weight: 500; }}
+      color: #94a3b8; font-weight: 500; position: sticky; top: 0; background: #1e293b; z-index: 1; }}
 td {{ padding: 10px 12px; border-bottom: 1px solid #334155; }}
-.reasoning {{ max-width: 340px; font-size: 0.8rem; color: #94a3b8; cursor: pointer; }}
+.reasoning {{ max-width: 500px; font-size: 0.8rem; color: #94a3b8; cursor: pointer;
+    word-break: break-word; }}
+.reasoning:hover {{ color: #e2e8f0; }}
 .positive {{ color: #4ade80; font-weight: 600; }}
 .negative {{ color: #f87171; font-weight: 600; }}
+.neutral {{ color: #94a3b8; font-weight: 600; }}
 .tooltip-box {{ position: fixed; background: #0f172a; color: #e2e8f0; border: 1px solid #475569;
-    border-radius: 8px; padding: 16px 20px; max-width: 480px; font-size: 0.85rem;
+    border-radius: 8px; padding: 16px 20px; max-width: 540px; font-size: 0.85rem;
     line-height: 1.5; box-shadow: 0 8px 24px rgba(0,0,0,0.6); z-index: 1000;
     pointer-events: none; opacity: 0; transition: opacity 0.15s; }}
 .tooltip-box.visible {{ opacity: 1; }}
-.legend {{ display: flex; gap: 20px; font-size: 0.8rem; color: #94a3b8; margin-top: 8px; }}
+.legend {{ display: flex; gap: 20px; font-size: 0.8rem; color: #94a3b8; margin-top: 8px; flex-wrap: wrap; }}
 .legend span {{ display: flex; align-items: center; gap: 6px; }}
 .legend .dot {{ width: 10px; height: 10px; border-radius: 50%; display: inline-block; }}
 .legend .dash {{ width: 16px; height: 0; border-top: 2px dashed #38bdf8; display: inline-block; }}
@@ -593,6 +1039,11 @@ td {{ padding: 10px 12px; border-bottom: 1px solid #334155; }}
 .stat {{ background: #0f172a; border-radius: 8px; padding: 16px 20px; min-width: 140px; }}
 .stat .value {{ font-size: 1.6rem; font-weight: 700; margin-top: 4px; }}
 .stat .label {{ font-size: 0.8rem; color: #94a3b8; }}
+.summary-text {{ font-size: 0.9rem; line-height: 1.7; color: #cbd5e1; }}
+.summary-text p {{ margin-bottom: 12px; }}
+.summary-text strong {{ color: #f59e0b; }}
+.sentiment-mild-bear {{ color: #fb923c; font-weight: 500; }}
+.sentiment-mild-bull {{ color: #34d399; font-weight: 500; }}
 </style>
 </head>
 <body>
@@ -618,24 +1069,29 @@ td {{ padding: 10px 12px; border-bottom: 1px solid #334155; }}
 <div class="card">
     <h2>Probability Over Time</h2>
     <div class="legend">
-        <span><span class="dot" style="background:#38bdf8"></span> PM snapshot (recorded daily)</span>
-        <span><span class="dash"></span> PM trend (from Gamma priceChange)</span>
+        <span><span class="dot" style="background:#38bdf8"></span> PM snapshots (recorded)</span>{'<span><span class="dash"></span> PM trend (Gamma estimate)</span>' if has_trend else ''}
+        <span><span style="display:inline-block;width:14px;height:0;border-top:2.5px solid #f59e0b;vertical-align:middle"></span> AI Agent</span>
     </div>
     <div style="color:#64748b;font-size:0.75rem;margin-top:4px">
         Polymarket does not expose public historical price data (CLOB /prices-history always empty).
-        The dashed line is estimated from Gamma API's oneDay/oneWeek/oneMonth priceChange deltas
-        applied to the current lastTradePrice. Blue dots are snapshots recorded each run.
+        {'The dashed line is estimated from Gamma API priceChange deltas. ' if has_trend else ''}Blue dots are real CSV snapshots recorded over time. The agent line shows what the AI predicted each day.
     </div>
     <div class="chart-container">
         <canvas id="probabilityChart"></canvas>
     </div>
 </div>
 
-<div class="card">
+{_summary_card(ai_summary)}
+
+{_sentiment_card(sentiment_analysis)}
+
+<div class="card scrollable">
     <h2>Daily Details &amp; AI Reasoning</h2>
     <table>
         <thead>
-            <tr><th>Date</th><th>Polymarket</th><th>AI Agent</th><th>Diff</th><th>AI Reasoning / Evidence</th></tr>
+            <tr><th>Date</th><th>Polymarket</th><th>AI Agent</th><th>Diff</th>{
+            '<th>Sentiment</th>' if has_sentiment else ''
+            }<th>AI Reasoning / Evidence</th></tr>
         </thead>
         <tbody>{reasoning_rows}</tbody>
     </table>
@@ -654,42 +1110,49 @@ new Chart(ctx, {{
                 borderColor: '#38bdf8',
                 backgroundColor: '#38bdf8',
                 tension: 0,
-                pointRadius: 5,
+                pointRadius: 6,
                 pointStyle: 'circle',
                 showLine: false,
                 spanGaps: false,
                 fill: false,
+                order: 1,
             }},
             {{
                 label: 'Polymarket (trend)',
-                data: {json.dumps(pm_current_line)},
+                data: {json.dumps(pm_trend_line if has_trend else [])},
                 borderColor: '#38bdf8',
                 backgroundColor: 'transparent',
                 borderDash: [6, 4],
                 borderWidth: 1,
-                tension: 0,
+                tension: 0.2,
                 pointRadius: 0,
                 fill: false,
+                order: 2,
             }},
             {{
                 label: 'AI Agent',
                 data: {json.dumps(agent_data)},
                 borderColor: '#f59e0b',
-                backgroundColor: 'rgba(245,158,11,0.1)',
+                backgroundColor: 'rgba(245,158,11,0.08)',
                 tension: 0.3,
                 pointRadius: 4,
-                borderWidth: 2,
+                borderWidth: 2.5,
                 fill: true,
+                order: 0,
             }}
         ]
     }},
     options: {{
         responsive: true,
         maintainAspectRatio: false,
+        interaction: {{
+            mode: 'index',
+            intersect: false,
+        }},
         scales: {{
-            y: {{ min: 0, max: 100, ticks: {{ color: '#94a3b8', callback: v => v + '%' }},
+            y: {{ min: 0, max: 100, ticks: {{ color: '#94a3b8', callback: v => v + '%', stepSize: 10 }},
                   grid: {{ color: '#334155' }} }},
-            x: {{ ticks: {{ color: '#94a3b8', maxTicksLimit: 14 }},
+            x: {{ ticks: {{ color: '#94a3b8', maxTicksLimit: 20, maxRotation: 45 }},
                   grid: {{ color: '#334155' }} }}
         }},
         plugins: {{
@@ -699,8 +1162,12 @@ new Chart(ctx, {{
                     afterBody: function(items) {{
                         if (items.length && items[0].dataset.label === 'AI Agent') {{
                             var idx = items[0].dataIndex;
-                            var reasons = {json.dumps([d.get('reasoning','')[:200] for d in daily_data])};
-                            if (idx < reasons.length && reasons[idx]) return 'Evidence: ' + reasons[idx];
+                            var reasons = {json.dumps([d.get('reasoning','') for d in daily_data])};
+                            if (idx < reasons.length && reasons[idx]) {{
+                                var text = reasons[idx];
+                                // Word-wrap at ~80 chars
+                                return '\\n' + text.replace(/(.{{70,90}}) /g, '$1\\n');
+                            }}
                         }}
                         return '';
                     }}
@@ -712,25 +1179,26 @@ new Chart(ctx, {{
 </script>
 <div class="tooltip-box" id="tooltip"></div>
 <script>
-// Hover tooltip on reasoning cells
+// Hover tooltip on reasoning cells — show FULL reasoning text
 const tooltip = document.getElementById('tooltip');
 document.querySelectorAll('.reasoning').forEach(el => {{
-    let tip = '';
     el.addEventListener('mouseenter', e => {{
-        tip = el.textContent.trim();
-        if (tip) {{
-            tooltip.textContent = tip;
+        var full = el.getAttribute('data-full') || el.textContent.trim();
+        if (full) {{
+            tooltip.textContent = full;
             tooltip.classList.add('visible');
-            tooltip.style.left = Math.min(e.clientX + 16, window.innerWidth - 500) + 'px';
-            tooltip.style.top = Math.min(e.clientY + 12, window.innerHeight - 120) + 'px';
+            positionTooltip(e);
         }}
     }});
-    el.addEventListener('mousemove', e => {{
-        tooltip.style.left = Math.min(e.clientX + 16, window.innerWidth - 500) + 'px';
-        tooltip.style.top = Math.min(e.clientY + 12, window.innerHeight - 120) + 'px';
-    }});
+    el.addEventListener('mousemove', e => positionTooltip(e));
     el.addEventListener('mouseleave', () => tooltip.classList.remove('visible'));
 }});
+function positionTooltip(e) {{
+    var left = Math.min(e.clientX + 16, window.innerWidth - 560);
+    var top = Math.min(e.clientY + 12, window.innerHeight - tooltip.offsetHeight - 12);
+    tooltip.style.left = left + 'px';
+    tooltip.style.top = top + 'px';
+}}
 </script>
 </body></html>"""
 
@@ -744,6 +1212,18 @@ document.querySelectorAll('.reasoning').forEach(el => {{
 # ===================================================================
 # CLI
 # ===================================================================
+
+def _find_existing_output(slug: str) -> Optional[str]:
+    """Find the most recent simulation output directory for this slug."""
+    log_base = REPO_ROOT / "logs" / "current_sim" / "dashboard"
+    if not log_base.exists():
+        return None
+    dirs = sorted(log_base.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+    for d in dirs:
+        if d.is_dir() and (d / "config.json").exists():
+            return str(d)
+    return None
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -773,12 +1253,14 @@ def main():
                         help="Subprocess timeout in seconds (default: 3600 = 60 min)")
     parser.add_argument("--output", default=None,
                         help="Output HTML path (default: dashboard_<slug>.html)")
+    parser.add_argument("--summary-only", action="store_true",
+                        help="Skip simulation; regenerate summary + dashboard from existing output")
 
     args = parser.parse_args()
 
     # ── 1. Fetch market ─────────────────────────────────────────────
     print("=" * 60)
-    print("Step 1/5: Fetching Polymarket market...")
+    print("Step 1/6: Fetching Polymarket market...")
     market = PolymarketClient.resolve_market(slug=args.slug, keyword=args.search)
     if not market:
         sys.exit(1)
@@ -789,44 +1271,69 @@ def main():
     print(f"  {title}")
     print(f"  Current probability: {current_prob:.4f}")
 
-    # ── 2. Build question ───────────────────────────────────────────
-    print("\nStep 2/5: Building custom question...")
     work_dir = REPO_ROOT / "logs" / "dashboard" / slug
     work_dir.mkdir(parents=True, exist_ok=True)
-    jsonl_path = work_dir / "question.jsonl"
-    q = build_custom_question_jsonl(market, jsonl_path)
 
-    # ── 3. Determine dates & run futuresim ──────────────────────────
-    today = date.today()
-    start_date = args.start_date or (today - timedelta(days=14)).isoformat()
-    if args.end_date:
-        end_date = args.end_date
+    if args.summary_only:
+        # Skip simulation — find existing output directory
+        output_dir = _find_existing_output(slug)
+        if not output_dir:
+            print("[Dashboard] No existing simulation output found. Run without --summary-only first.")
+            sys.exit(1)
+        print(f"\nStep 2/6: Using existing output: {output_dir}")
+        print("Step 3/6: Skipped (--summary-only).")
+
+        # Read config to get start/end dates used in the original run
+        config_path = Path(output_dir) / "config.json"
+        start_date = end_date = None
+        if config_path.exists():
+            try:
+                cfg = json.loads(config_path.read_text())
+                start_date = cfg.get("start_date", "") or cfg.get("sim_start_date", "")
+                end_date = cfg.get("end_date", "") or cfg.get("sim_end_date", "")
+            except Exception:
+                pass
+        if not start_date:
+            today = date.today()
+            start_date = (today - timedelta(days=14)).isoformat()
+            end_date = today.isoformat()
     else:
-        end_date = (date.fromisoformat(start_date) + timedelta(days=14)).isoformat() if start_date else today.isoformat()
-    # Ensure the resolution filter includes the market's resolution date
-    res_date_str = q.get("resolution_date", "")
-    resolution_end = None
-    if res_date_str and not args.end_date:
-        # Extend resolution_end to cover the question, but keep sim window short
-        try:
-            res_dt = date.fromisoformat(res_date_str)
-            sim_end_dt = date.fromisoformat(end_date) if isinstance(end_date, str) else end_date
-            if res_dt > sim_end_dt:
-                resolution_end = (res_dt + timedelta(days=7)).isoformat()
-        except ValueError:
-            pass
+        # ── 2. Build question ───────────────────────────────────────
+        print("\nStep 2/6: Building custom question...")
+        jsonl_path = work_dir / "question.jsonl"
+        q = build_custom_question_jsonl(market, jsonl_path)
 
-    print(f"\nStep 3/5: Running futuresim ({start_date} -> {end_date})...")
-    output_dir = run_futuresim(jsonl_path, start_date, end_date,
-                               provider="deepseek", model=args.model,
-                               matching=args.matching, max_actions=args.max_actions,
-                               timeout=args.timeout, resolution_end=resolution_end)
-    if not output_dir:
-        print("\n[Dashboard] Simulation failed. Check errors above.")
-        sys.exit(1)
+        # ── 3. Determine dates & run futuresim ──────────────────────
+        today = date.today()
+        start_date = args.start_date or (today - timedelta(days=14)).isoformat()
+        if args.end_date:
+            end_date = args.end_date
+        else:
+            end_date = (date.fromisoformat(start_date) + timedelta(days=14)).isoformat() if start_date else today.isoformat()
 
-    # ── 4. Extract data & history ───────────────────────────────────
-    print("\nStep 4/5: Extracting predictions and reasoning...")
+        res_date_str = q.get("resolution_date", "")
+        resolution_end = None
+        if res_date_str and not args.end_date:
+            try:
+                res_dt = date.fromisoformat(res_date_str)
+                sim_end_dt = date.fromisoformat(end_date) if isinstance(end_date, str) else end_date
+                if res_dt > sim_end_dt:
+                    resolution_end = (res_dt + timedelta(days=7)).isoformat()
+            except ValueError:
+                pass
+
+        print(f"\nStep 3/6: Running futuresim ({start_date} -> {end_date})...")
+        output_dir = run_futuresim(jsonl_path, start_date, end_date,
+                                   provider="deepseek", model=args.model,
+                                   matching=args.matching, max_actions=args.max_actions,
+                                   force_submit=True, timeout=args.timeout,
+                                   resolution_end=resolution_end)
+        if not output_dir:
+            print("\n[Dashboard] Simulation failed. Check errors above.")
+            sys.exit(1)
+
+    # ── 4. Extract data & fetch real-time Polymarket history ─────────
+    print("\nStep 4/6: Extracting predictions and reasoning...")
     daily_data = extract_daily_data(output_dir)
     if not daily_data:
         print("[Dashboard] No predictions found. Agent made 0 submissions.")
@@ -837,51 +1344,49 @@ def main():
         print(f"  {d['date']}: {d['prob_yes']*100:.1f}% Yes | "
               f"{'searches: '+str(len(d.get('searches',[]))) if d.get('searches') else 'no research'}")
 
-    # Fetch Polymarket historical data
-    pm_history: Dict[str, float] = {}
-
-    # Try Gamma API trend data for approximate history
+    # Fetch Gamma API trend data for approximate daily history
     gamma_history = fetch_pm_price_history(market, date.fromisoformat(start_date), date.fromisoformat(end_date))
     if gamma_history:
         print(f"\n  Gamma trend history: {len(gamma_history)} daily prices (from priceChange deltas)")
 
-    # Load CSV snapshots (ground truth anchor points)
-    csv_history = load_pm_history(slug)
-
-    # Merge: CSV snapshots override Gamma estimates for their dates
-    pm_history = gamma_history
-    pm_history.update(csv_history)
-
-    if csv_history:
-        snapshot_dates = sorted(csv_history.keys())
-        print(f"  CSV snapshots: {len(csv_history)} points ({snapshot_dates[0]} -> {snapshot_dates[-1]})")
-
-    # Record today's snapshot (adds today to pm_history for filtering)
+    # Record today's snapshot (updates csv_history for dashboard display)
     record_pm_snapshot(slug)
     csv_history = load_pm_history(slug)
-    pm_history.update(csv_history)
 
-    # Filter agent predictions to only dates with real CSV snapshot data
-    if csv_history and daily_data:
-        snapshot_dates_set = set(csv_history.keys())
-        daily_data = [d for d in daily_data if d["date"] in snapshot_dates_set]
-        if daily_data:
-            print(f"\n  Filtered to {len(daily_data)} days with CSV snapshot data")
-        else:
-            print("\n  No predictions on CSV snapshot dates. Showing empty.")
+    if csv_history:
+        snapshot_dates_list = sorted(csv_history.keys())
+        print(f"  CSV snapshots: {len(csv_history)} points ({snapshot_dates_list[0]} -> {snapshot_dates_list[-1]})")
 
-    snapshot_dates = sorted(pm_history.keys())
-    if len(pm_history) >= 2:
-        print(f"  Polymarket history: {len(pm_history)} data points ({snapshot_dates[0]} -> {snapshot_dates[-1]})")
-    elif len(pm_history) == 1:
-        print(f"  Polymarket history: 1 data point ({snapshot_dates[0]}). Run daily for more.")
+    # Show all agent predictions — PM snapshots overlay as dots on matching dates
+
+    if len(csv_history) >= 2:
+        sdates = sorted(csv_history.keys())
+        print(f"  CSV history: {len(csv_history)} data points ({sdates[0]} -> {sdates[-1]})")
+    elif len(csv_history) == 1:
+        print(f"  CSV history: 1 data point. Run daily for more.")
     else:
-        print("  No Polymarket history. Snapshot will be recorded each run.")
+        print("  No CSV history. Snapshot will be recorded each run.")
 
-    # ── 5. Generate dashboard ───────────────────────────────────────
-    print("\nStep 5/5: Generating dashboard HTML...")
+    # ── 5. Generate AI narrative summary ─────────────────────────────
+    print("\nStep 5/6: Generating AI narrative summary...")
+    ai_summary = generate_ai_summary(market, daily_data, csv_history, model=args.model)
+    if ai_summary:
+        preview = ai_summary[:120] + "..." if len(ai_summary) > 120 else ai_summary
+        print(f"  Summary: {preview}")
+    else:
+        print("  No summary generated (LLM call failed or no data).")
+
+    # ── 5b. Generate sentiment analysis ──────────────────────────────
+    sentiment_analysis = generate_sentiment_analysis(daily_data, csv_history)
+    if sentiment_analysis:
+        preview = sentiment_analysis[:120] + "..." if len(sentiment_analysis) > 120 else sentiment_analysis
+        print(f"  Sentiment: {preview}")
+
+    # ── 6. Generate dashboard ───────────────────────────────────────
+    print("\nStep 6/6: Generating dashboard HTML...")
     output_path = Path(args.output) if args.output else (work_dir / f"dashboard_{slug}.html")
-    generate_dashboard(market, daily_data, pm_history, output_path, current_prob)
+    generate_dashboard(market, daily_data, csv_history, gamma_history, output_path, current_prob,
+                       ai_summary, sentiment_analysis)
     print("\n" + "=" * 60)
     print("Dashboard ready! Open the HTML file in any browser.")
 

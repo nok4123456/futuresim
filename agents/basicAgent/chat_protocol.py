@@ -78,7 +78,9 @@ class BasicChatProtocol:
             return None
 
         out: Dict[str, Any] = {"role": "assistant"}
-        if "content" in assistant_message:
+        # DeepSeek V4 requires non-null content on every assistant message that
+        # carries tool_calls.  Always include content when tool_calls are present.
+        if "content" in assistant_message or has_tool_calls:
             out["content"] = content if content is not None else ""
         if has_tool_calls:
             out["tool_calls"] = tool_calls

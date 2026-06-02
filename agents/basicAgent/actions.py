@@ -237,14 +237,14 @@ class BasicActionHandlers:
                 # Attach submission reasoning if provided by the model
                 sub_reasoning = parsed.submit_reasoning
                 if sub_reasoning:
-                    feedback += f"\nReasoning: {sub_reasoning[:500]}"
+                    feedback += f"\nReasoning: {sub_reasoning[:4000]}"
                     # Store in daily evidence log
                     _store_submit_evidence(self, sub['qid'], sub['outcomes'], sub_reasoning)
 
                 # Log counterfactual if provided
                 counterfactual = parsed.submit_counterfactual
                 if counterfactual:
-                    feedback += f"\nCounterfactual: {counterfactual[:300]}"
+                    feedback += f"\nCounterfactual: {counterfactual[:2000]}"
                     _store_submit_counterfactual(self, sub['qid'], counterfactual)
 
                 # Log evidence diversity if provided

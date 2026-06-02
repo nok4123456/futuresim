@@ -48,14 +48,15 @@ class AgentConfig:
     parallel_tool_calls: bool = False
 
     # Force at least one submission per simulation day
-    daily_submit: bool = False
+    daily_submit: bool = True
 
     # Single agent mode - adjusts prompt to focus on accuracy only (no peer/market language)
+    # Computed at runtime based on the number of agents in the simulation.
     single_agent_mode: bool = True
 
     def __post_init__(self):
         if self.sampling_params is None:
-            self.sampling_params = {'temperature': 0.7, 'max_tokens': 2048}
+            self.sampling_params = {'temperature': 0.2, 'max_tokens': 4096}
         for name, value in (
             ("max_actions", self.max_actions),
             ("warmup_max_actions", self.warmup_max_actions),

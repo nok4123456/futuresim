@@ -277,17 +277,11 @@ class OpenRouterInference(BaseInference):
                             )
                             time.sleep(delay)
                             continue
-                        # Exhausted retries — fall through with the reasoning as content
-                        print(
-                            f"  [OpenRouter] Empty content persisted after {self.max_retries} retries, "
-                            f"using reasoning as content ({len(reasoning)} chars)"
+                        # Exhausted retries — raise exception so caller handles cleanup
+                        raise RuntimeError(
+                            f"Empty content persisted after {self.max_retries} retries "
+                            f"(reasoning={len(reasoning)} chars, finish={finish_reason})"
                         )
-                        first = data.get("choices", [{}])[0]
-                        if isinstance(first, dict):
-                            message = first.setdefault("message", {})
-                            if isinstance(message, dict):
-                                message["content"] = reasoning
-                        return data
 
                     # Log empty content without reasoning (unexpected).
                     # Suppress for finish_reason=tool_calls — normal for tool-only responses.
@@ -348,6 +342,5 @@ class OpenRouterInference(BaseInference):
                     time.sleep(delay)
                     continue
 
-        # All retries exhausted - return empty output to allow simulation to continue
-        print(f"  [OpenRouter] Request failed after {self.max_retries} retries: {last_error}. Returning empty output.")
-        return {}
+        # All retries exhausted — raise exception so caller can handle cleanup
+        raise RuntimeError(f"Request failed after {self.max_retries} retries: {last_error}")

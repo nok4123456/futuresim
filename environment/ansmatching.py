@@ -37,9 +37,18 @@ Essentially, you have to grade whether the forecaster correctly predicted the gr
 Answer strictly "Yes" or "No"."""
 
 
-def parse_is_equivalent_response(response: str) -> bool:
-    """Parse matcher text output into a boolean equivalence decision."""
-    return "yes" in (response or "").lower()
+def parse_is_equivalent_response(response: str) -> Optional[bool]:
+    """Parse matcher text output into a boolean equivalence decision.
+
+    Returns True if the response starts with "yes", False if it starts with "no",
+    and None for ambiguous responses that cannot be reliably classified.
+    """
+    cleaned = (response or "").strip().lower()
+    if cleaned.startswith("yes"):
+        return True
+    if cleaned.startswith("no"):
+        return False
+    return None
 
 
 def build_find_match_prompt(candidate: str, existing_outcomes: List[str], question_title: str = None) -> str:
@@ -379,7 +388,7 @@ class AnswerMatcher:
 
     def is_equivalent(self, predicted: str, ground_truth: str, 
                       question_id: str = None, question_title: str = None,
-                      match_type: str = "is_equivalent") -> bool:
+                      match_type: str = "is_equivalent") -> Optional[bool]:
         """
         Check if two outcome strings are semantically equivalent.
         """
@@ -405,7 +414,7 @@ class AnswerMatcher:
         # Ask LLM
         result = self._llm_is_equivalent(predicted, ground_truth, question_id, question_title, match_type)
         if result is None:
-            return False
+            return None
         self._cache[cache_key] = result
         if self.cache_path:
             self._cache_dirty = True
@@ -533,16 +542,7 @@ class AnswerMatcher:
             idx = pending_indices[j]
             predicted, ground_truth, qid, qtitle, cache_key = pending_meta[j]
             if not response_text or not response_text.strip():
-                fallback = self._llm_is_equivalent(
-                    predicted,
-                    ground_truth,
-                    qid,
-                    qtitle,
-                    match_type="check_guess",
-                )
-                results[idx] = False if fallback is None else fallback
-                if fallback is not None:
-                    self._cache[cache_key] = fallback
+                results[idx] = None
                 continue
             is_equiv = parse_is_equivalent_response(response_text)
             self._cache[cache_key] = is_equiv
@@ -569,7 +569,7 @@ class AnswerMatcher:
             self._cache_dirty = True
         self._cache_miss_count += len(pending_messages)
 
-        return [r if r is not None else False for r in results]
+        return [r for r in results if r is not None]
 
     def warmup_cache(
         self,

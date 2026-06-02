@@ -14,10 +14,9 @@ from ..base import BaseSearchTool, SearchResult, Article
 
 class LanceDBSearchTool(BaseSearchTool):
     """LanceDB-based search with hybrid search and date filtering."""
-    
+
     TABLE_NAME = "articles"
-    _hybrid_warned = False
-    
+
     def __init__(self, db_path: str, embedding_model=None, model_path: str = None):
         """
         Args:
@@ -27,6 +26,7 @@ class LanceDBSearchTool(BaseSearchTool):
         """
         self._db_path = db_path
         self._embedding_model = embedding_model
+        self._hybrid_warned = False
         self._model_path = model_path
         self._model_loaded = embedding_model is not None
         self._db = None
@@ -101,10 +101,16 @@ class LanceDBSearchTool(BaseSearchTool):
             max_ts = f"{max_date.isoformat()}T23:59:59"
             where_clauses.append(
                 f"date <= timestamp '{max_ts}' "
-                f"AND (date_publish IS NULL OR date_publish <= timestamp '{max_ts}')"
+                f"AND date_publish IS NOT NULL "
+                f"AND date_publish <= timestamp '{max_ts}'"
             )
         if min_date:
-            where_clauses.append(f"date >= timestamp '{min_date.isoformat()}T00:00:00'")
+            min_ts = f"{min_date.isoformat()}T00:00:00"
+            where_clauses.append(
+                f"date >= timestamp '{min_ts}' "
+                f"AND date_publish IS NOT NULL "
+                f"AND date_publish >= timestamp '{min_ts}'"
+            )
         where = " AND ".join(where_clauses) if where_clauses else None
         
         def _execute(results_builder, *, prefilter: bool):
@@ -204,10 +210,7 @@ class LanceDBSearchTool(BaseSearchTool):
                     else:  # hybrid - use separate vector() and text()
                         try:
                             results = self._table.search(query_type="hybrid").vector(query_embedding).text(query)
-                            # LanceDB 0.29.x HybridQueryBuilder passes this flag
-                            # through inverted to its inner vector/FTS builders.
-                            # prefilter=False here gives true date prefiltering.
-                            rows = _execute(results, prefilter=False)
+                            rows = _execute(results, prefilter=True)
                         except Exception as e:
                             if _is_fts_parser_error(e):
                                 retry_err: Optional[Exception] = None
@@ -217,7 +220,7 @@ class LanceDBSearchTool(BaseSearchTool):
                                     print(f"[LanceDB] Retrying hybrid with sanitized query: {q2}")
                                     try:
                                         results = self._table.search(query_type="hybrid").vector(query_embedding).text(q2)
-                                        rows = _execute(results, prefilter=False)
+                                        rows = _execute(results, prefilter=True)
                                         return self._to_results(rows)
                                     except Exception as e2:
                                         retry_err = e2
@@ -225,9 +228,9 @@ class LanceDBSearchTool(BaseSearchTool):
                                             continue
                                         break
                                 # All retries exhausted or non-FTS error — fall through to semantic
-                            if not LanceDBSearchTool._hybrid_warned:
+                            if not self._hybrid_warned:
                                 print(f"[LanceDB] Hybrid search unavailable, falling back to semantic: {e}")
-                                LanceDBSearchTool._hybrid_warned = True
+                                self._hybrid_warned = True
                             results = self._table.search(query_embedding)
                             rows = _execute(results, prefilter=True)
             return self._to_results(rows)

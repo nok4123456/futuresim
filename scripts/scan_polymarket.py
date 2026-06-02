@@ -9,7 +9,7 @@ potentially mispriced markets (edges).
 Usage:
     python scripts/scan_polymarket.py --tag crypto --min-volume 500 --limit 10 --parallel
     python scripts/scan_polymarket.py --tag politics --limit 5 --dashboard-top 3
-    python scripts/scan_polymarket.py --tag ai --min-volume 1000 --provider deepseek --deepseek-model deepseek-v4-flash
+    python scripts/scan_polymarket.py --tag ai --min-volume 1000 --provider deepseek --deepseek-model deepseek-v4-pro
 """
 
 import argparse
@@ -46,6 +46,8 @@ RUN_FORECAST_SCRIPT = _REPO_ROOT / "scripts" / "run_forecast_sim.py"
 BUILD_DASHBOARD_SCRIPT = _REPO_ROOT / "scripts" / "build_dashboard.py"
 OUTPUT_BASE = _REPO_ROOT / "logs" / "current_sim"
 SCAN_LOG_DIR = _REPO_ROOT / "logs" / "scans"
+SCANNED_CACHE = SCAN_LOG_DIR / "scanned_cache.json"
+SCANNED_CACHE_TTL_HOURS = 24
 
 # Polymarket Gamma API uses tag slugs (not numeric IDs) for filtering.
 # Slugs that don't match any Polymarket tag trigger a keyword search fallback.
@@ -59,10 +61,56 @@ KNOWN_TAG_SLUGS = {
 SIM_WINDOW_DAYS = 3
 
 # Per-market simulation timeout (seconds)
-SIM_TIMEOUT = 1500
+SIM_TIMEOUT = 2000
 
 # Default concurrency
 DEFAULT_MAX_WORKERS = 5
+
+# Scanned-market dedup cache
+SCANNED_CACHE = SCAN_LOG_DIR / "scanned_cache.json"
+SCANNED_CACHE_TTL_HOURS = 24
+
+
+# ===========================================================================
+# Scanned-market cache helpers
+# ===========================================================================
+
+def _load_scanned_cache() -> Dict[str, str]:
+    """Return {slug: iso_timestamp} for previously scanned markets."""
+    if not SCANNED_CACHE.exists():
+        return {}
+    try:
+        with open(SCANNED_CACHE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_scanned_cache(cache: Dict[str, str]) -> None:
+    SCAN_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(SCANNED_CACHE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+    except Exception:
+        pass
+
+
+def _prune_stale_entries(cache: Dict[str, str], ttl_hours: int = SCANNED_CACHE_TTL_HOURS) -> Dict[str, str]:
+    """Remove entries older than *ttl_hours*."""
+    cutoff = datetime.now() - timedelta(hours=ttl_hours)
+    return {
+        slug: ts for slug, ts in cache.items()
+        if datetime.fromisoformat(ts) > cutoff
+    }
+
+
+def _filter_new_markets(markets: List[dict], cache: Dict[str, str]) -> List[dict]:
+    """Return only markets whose slug is not in the cache."""
+    new = [m for m in markets if m.get("slug") not in cache]
+    skipped = len(markets) - len(new)
+    if skipped:
+        print(f"[Scanner] Skipping {skipped} already-scanned market(s).", flush=True)
+    return new
 
 
 # ===========================================================================
@@ -276,7 +324,7 @@ def run_futuresim(
     end_date: str,
     *,
     provider: str = "deepseek",
-    model: str = "deepseek-v4-flash",
+    model: str = "deepseek-v4-pro",
     sim_name: str = "scan",
     max_actions: int = 2,
     temperature: float = 0.0,
@@ -499,7 +547,7 @@ def analyze_gap_with_llm(
     evidence: dict,
     *,
     provider: str = "deepseek",
-    model: str = "deepseek-v4-flash",
+    model: str = "deepseek-v4-pro",
 ) -> Optional[str]:
     """Use the LLM to explain why the agent's forecast differs from (or aligns
     with) the Polymarket price.
@@ -621,7 +669,7 @@ def scan_single_market(
     market: dict,
     *,
     provider: str = "deepseek",
-    model: str = "deepseek-v4-flash",
+    model: str = "deepseek-v4-pro",
     max_actions: int = 2,
     temperature: float = 0.0,
     timeout: int = SIM_TIMEOUT,
@@ -635,6 +683,7 @@ def scan_single_market(
     """
     title = market.get("question", market.get("title", "Unknown"))
     slug = market.get("slug", "unknown")
+    market_id = market.get("id", "")
     end_date = market.get("_end_date")
     volume = market.get("_volume", float(market.get("volume", 0) or 0))
 
@@ -645,6 +694,7 @@ def scan_single_market(
     result = {
         "title": title,
         "slug": slug,
+        "market_id": market_id,
         "market_prob": market_prob,
         "agent_prob": None,
         "gap": None,
@@ -821,7 +871,9 @@ def build_html_report(results: List[dict], output_path: Path, metadata: dict = N
         gap_bar = f'<div class="gap-bar"><div class="gap-fill" style="width:{bar_width}%"></div></div>' if gap is not None else ""
         has_analysis = bool(analysis and status == "success")
 
-        polymarket_url = f"https://polymarket.com/event/{slug}" if slug else "#"
+        # Use numeric id when available (redirects reliably); fall back to slug
+        mid = r.get("market_id", "")
+        polymarket_url = f"https://polymarket.com/market/{mid}" if mid else (f"https://polymarket.com/event/{slug}" if slug else "#")
 
         # Evidence summary line
         sentiment_val = evidence.get("sentiment_score")
@@ -1279,7 +1331,7 @@ def save_results_csv(results: List[dict], output_path: Path):
     """Save full scan results to CSV."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
-        "rank", "title", "slug", "market_prob", "agent_prob", "gap",
+        "rank", "title", "slug", "market_id", "market_prob", "agent_prob", "gap",
         "volume", "end_date", "status", "error", "output_dir",
     ]
     with open(output_path, "w", encoding="utf-8", newline="") as f:
@@ -1370,8 +1422,8 @@ def main():
     parser.add_argument("--provider", default="deepseek",
                         choices=["deepseek", "openrouter"],
                         help="Inference provider. Default: deepseek")
-    parser.add_argument("--deepseek-model", default="deepseek-v4-flash",
-                        help="DeepSeek model name. Default: deepseek-v4-flash")
+    parser.add_argument("--deepseek-model", default="deepseek-v4-pro",
+                        help="DeepSeek model name. Default: deepseek-v4-pro")
     parser.add_argument("--openrouter-model", default=None,
                         help="OpenRouter model name (e.g. deepseek/deepseek-v3.2)")
     parser.add_argument("--max-actions", type=int, default=5,
@@ -1388,6 +1440,8 @@ def main():
                         help=f"Max parallel workers. Default: {DEFAULT_MAX_WORKERS}")
 
     # Output
+    parser.add_argument("--no-cache", action="store_true", default=False,
+                        help="Ignore scanned-market cache and re-scan everything")
     parser.add_argument("--dashboard-top", type=int, default=None,
                         help="After scanning, run build_dashboard.py on top N markets by gap")
     parser.add_argument("--html-from-csv", default=None,
@@ -1464,6 +1518,32 @@ def main():
         print("[Scanner] No markets found matching filters. Exiting.", flush=True)
         return
 
+    # ── Dedup: filter out already-scanned markets, re-fetch if needed ──
+    if not args.no_cache:
+        cache = _prune_stale_entries(_load_scanned_cache())
+        markets = _filter_new_markets(markets, cache)
+        if not markets:
+            # All top-N cached — bump the limit to skip ahead
+            bumped_limit = args.limit + len(cache)
+            print(f"[Scanner] Top {args.limit} all cached, fetching up to {bumped_limit}...", flush=True)
+            markets = fetch_markets(
+                tag=args.tag,
+                min_volume=args.min_volume,
+                max_volume=args.max_volume,
+                resolves_after=resolves_after,
+                resolves_before=resolves_before,
+                limit=bumped_limit,
+                sort=args.sort,
+            )
+            markets = [m for m in markets if m.get("slug") not in cache][:args.limit]
+            if not markets:
+                print("[Scanner] All markets already scanned (use --no-cache to force). Exiting.", flush=True)
+                return
+            print(f"[Scanner] Found {len(markets)} new market(s) beyond cache.", flush=True)
+    else:
+        cache = {}
+        print("[Scanner] Cache disabled (--no-cache).", flush=True)
+
     # ── Step 2: Run scans ──────────────────────────────────────────────
     model_name = args.openrouter_model if args.provider == "openrouter" else args.deepseek_model
 
@@ -1499,6 +1579,7 @@ def main():
                     results.append({
                         "title": spec["market"].get("question", "?"),
                         "slug": slug,
+                        "market_id": spec["market"].get("id", ""),
                         "market_prob": None,
                         "agent_prob": None,
                         "gap": None,
@@ -1521,6 +1602,7 @@ def main():
                 results.append({
                     "title": spec["market"].get("question", "?"),
                     "slug": slug,
+                    "market_id": spec["market"].get("id", ""),
                     "market_prob": None,
                     "agent_prob": None,
                     "gap": None,
@@ -1535,6 +1617,15 @@ def main():
 
     # Sort by gap descending (None/error at bottom)
     results.sort(key=lambda r: (r["gap"] is not None and r["status"] == "success", r["gap"] or 0), reverse=True)
+
+    # ── Save scanned slugs to cache ────────────────────────────────────
+    if not args.no_cache:
+        now = datetime.now().isoformat()
+        for r in results:
+            slug = r.get("slug")
+            if slug:
+                cache[slug] = now
+        _save_scanned_cache(cache)
 
     # ── Step 3: Output results ─────────────────────────────────────────
     print_results_table(results)

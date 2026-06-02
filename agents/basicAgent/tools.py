@@ -303,7 +303,7 @@ def build_action_tools(
                         ),
                     },
                 },
-                "required": ["forecasts", "reasoning", "counterfactual", "evidence_diversity"],
+                "required": ["forecasts", "reasoning", "counterfactual", "evidence_diversity", "base_rate_estimate"],
             },
         )
     )
@@ -556,7 +556,8 @@ def extract_assistant_message(chat_response_json: Dict[str, Any]) -> Dict[str, A
     tool_calls = message.get("tool_calls")
     if isinstance(tool_calls, list):
         out["tool_calls"] = tool_calls
-    reasoning = message.get("reasoning")
+    # DeepSeek V4 returns reasoning_content; standard API uses reasoning
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
     if isinstance(reasoning, str) and reasoning:
         out["reasoning"] = reasoning
     return out

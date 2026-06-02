@@ -543,9 +543,10 @@ class SimulationEnvironment:
         for agent_id, pred in final_snapshot.items():
             raw_brier = scorer.score_prediction(pred, q.ground_truth_answer, self.matcher,
                                                  question_id=q.qid, question_title=q.title)
-            raw_brier_scores[agent_id] = raw_brier
-            if agent_id in self.agent_raw_brier:
-                self.agent_raw_brier[agent_id] += raw_brier
+            if raw_brier is not None:
+                raw_brier_scores[agent_id] = raw_brier
+                if agent_id in self.agent_raw_brier:
+                    self.agent_raw_brier[agent_id] += raw_brier
         
         # Snapshot peer scores (not time-weighted)
         snapshot_peer_scores = {}
@@ -714,7 +715,17 @@ class SimForecastInterface:
                 key=lambda item: (-float(item[1]), item[0]),
             )[: self.max_outcomes_per_question]
         )
-        
+
+        # Clamp probabilities to [0.02, 0.98] and renormalize to sum=1.0
+        if prediction.outcomes:
+            clamped = {
+                k: max(0.02, min(0.98, float(v)))
+                for k, v in prediction.outcomes.items()
+            }
+            total = sum(clamped.values())
+            if total > 0:
+                prediction.outcomes = {k: v / total for k, v in clamped.items()}
+
         # Validate probabilities
         total = sum(prediction.outcomes.values())
         if total > 1.0 + 1e-6:

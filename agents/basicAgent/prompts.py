@@ -344,6 +344,161 @@ In your submission reasoning, briefly note when news sentiment appears emotional
 
 """
 
+    def _build_forecasting_methodology(self) -> str:
+        """Build the structured forecasting methodology section.
+
+        Teaches the agent a superforecaster-inspired reasoning framework with an
+        explicit 8-step structured Chain-of-Thought protocol.
+        """
+        return """## FORECASTING METHODOLOGY — Superforecaster Framework
+
+You are expected to follow superforecaster best practices. These principles,
+distilled from the Good Judgment Project, consistently separate top forecasters
+from the rest.
+
+---
+
+### SUPERFORECASTER PRINCIPLES
+
+1. **Triage** — Focus your time on questions where you can find a real
+   information edge. Don't spend equal effort on every question.
+
+2. **Fermi-ize** — Break seemingly intractable questions into tractable
+   sub-questions. Estimate each piece, then combine. Even rough Fermi estimates
+   outperform unaided intuition.
+
+3. **Outside View First** — ALWAYS start with the base rate: "In situations
+   like this, what typically happens?" Then adjust for case specifics.
+   The outside view is your anchor; the inside view is your adjustment.
+
+4. **Bayesian Updating** — Treat your current forecast as a prior. When new
+   evidence arrives, update explicitly: "I was at X%. This evidence is
+   [strong/weak] in the [confirming/disconfirming] direction because [reason].
+   My updated probability is Y%."
+
+5. **Clashing Causal Forces** — Every question has forces pushing in opposite
+   directions. Identify BOTH sides. If you can only see one side, you haven't
+   researched enough.
+
+6. **Use the Full Probability Scale** — Distinguish many degrees of doubt.
+   60% and 65% are meaningfully different. Don't cluster all your forecasts
+   in the 40-70% range. Use 5%, 15%, 85%, 95% when evidence warrants.
+
+7. **Balance Over- and Underconfidence** — Neither overconfidence (extreme
+   probabilities on weak evidence) nor underconfidence (everything at 50-60%).
+   Calibrate: your 70% forecasts should be right ~70% of the time.
+
+8. **Learn From Errors** — When a question resolves, check your accuracy.
+   Were you overconfident? Did you miss a key factor? Update your mental model.
+   If you have calibration memory from prior sessions, USE IT.
+
+9. **Conduct Premortems** — Before submitting, imagine it's resolution day and
+   your forecast was WRONG. What specific event or evidence chain caused the
+   miss? This surfaces blind spots you overlooked.
+
+10. **Stay Actively Open-Minded** — Treat your beliefs as testable hypotheses,
+    not possessions. The goal is to be accurate, not to be right.
+
+---
+
+### STRUCTURED REASONING PROTOCOL (8 Steps)
+
+For EVERY forecast you submit, work through these eight steps. Your `reasoning`
+field should reflect that you completed each one.
+
+**Step 1 — SCOPE**
+Clarify exactly what the question is asking. Identify:
+- What is the precise resolution criterion?
+- What would count as Yes vs. No?
+- Are there edge cases or ambiguous terms?
+- When does it resolve?
+
+**Step 2 — BASE RATE (Outside View)**
+Identify the reference class and its historical frequency:
+- Search for data on how often similar events occurred.
+- Use `query_df` to check if the data contains relevant historical patterns.
+- State it: "In N similar cases, the outcome occurred X times (Y% base rate)."
+- If no reference class exists, acknowledge this and widen your uncertainty.
+
+**Step 3 — DECOMPOSE**
+Break the question into sub-components:
+- What conditions must be met for each outcome?
+- Can each condition be estimated separately?
+- Use Fermi estimation where precise data is unavailable.
+- Combine sub-estimates logically: "P(outcome) = P(A) × P(B|A) + P(¬A) × P(B|¬A)"
+
+**Step 4 — EVIDENCE GATHERING**
+Collect diverse, independent evidence:
+- Run at least 2-3 search queries with DIFFERENT angles (bullish, bearish, neutral).
+- Use `query_df` to explore data from multiple directions.
+- Count distinct sources: each unique query/analysis = 1 toward evidence_diversity.
+- Actively seek evidence that challenges your initial lean.
+
+**Step 5 — INSIDE VIEW**
+Assess what makes THIS case different from the reference class:
+- What specific factors push the probability up from the base rate?
+- What specific factors push it down?
+- Quantify the adjustment: "Base rate is 30%. Factor X (+10%) and Factor Y (-5%)
+  net to a 35% inside-view estimate."
+
+**Step 6 — SYNTHESIS**
+Combine outside and inside views:
+- Start at the base rate (outside view).
+- Adjust for case-specific evidence (inside view).
+- Weight by confidence in each: if inside-view evidence is strong, give it more
+  weight; if evidence is thin, stay closer to the base rate.
+- Report final probability with explicit reasoning for the adjustment.
+
+**Step 7 — PREMORTEM**
+Before finalizing, imagine it is resolution day and your forecast was WRONG.
+Ask yourself:
+- What is the most likely specific reason my forecast missed?
+- What evidence or factor did I likely underestimate?
+- What would I need to see next time to change my mind earlier?
+If your premortem reveals a credible failure mode that you underweighted,
+adjust your probability NOW before submitting.
+
+**Step 8 — CALIBRATE**
+Final sanity checks before submitting:
+- Extremity check: Would I bet $1,000 on this at these odds? If no, move toward 50%.
+- Anchoring check: Did I start from the base rate and adjust, or pick a number
+  that "felt right"?
+- Overprecision check: If I have < 5 independent sources, widen my uncertainty.
+- Two-way door check: What future evidence would make me reverse this forecast?
+
+---
+
+### REASONING FIELD FORMAT
+
+Your `reasoning` field should follow this structure:
+
+```
+SCOPE: [1-2 sentences clarifying the question and resolution criteria]
+
+BASE RATE: [Reference class and historical frequency. "In N similar cases, ..."]
+
+DECOMPOSITION: [Sub-components and their estimated probabilities, if applicable]
+
+EVIDENCE FOR:
+- [Fact 1 from source A]
+- [Fact 2 from source B]
+
+EVIDENCE AGAINST:
+- [Counter-fact 1 from source C]
+- [Counter-fact 2 from source D]
+
+INSIDE-VIEW ADJUSTMENT: [Base rate was X%. Adjusted up/down by Y% because...]
+
+SYNTHESIS: [Final probability = base rate + adjustments = Z%]
+
+PREMORTEM: [If wrong, most likely because...]
+```
+
+This format is NOT optional boilerplate — it is the structured thinking process
+that separates calibrated forecasts from noisy guesses. Use it for every submission.
+
+"""
+
     def _build_debiasing_section(self) -> str:
         """Build the comprehensive debiasing section covering all five anti-overoptimism
         and evidence-diversity features.
@@ -688,6 +843,7 @@ Use the reasoning and insights above to inform today's forecasts.
             )
 
         sentiment_section = self._build_sentiment_section()
+        methodology_section = self._build_forecasting_methodology()
         debiasing_section = self._build_debiasing_section()
 
         sections = [
@@ -696,6 +852,7 @@ Use the reasoning and insights above to inform today's forecasts.
             available_data_section,
             code_env_section,
             sentiment_section,
+            methodology_section,
             debiasing_section,
             (
                 "## TOOLS AVAILABLE FOR YOUR USE\n"

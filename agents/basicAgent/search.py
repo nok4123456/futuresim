@@ -139,6 +139,6 @@ class SearchHandler:
             if r.url:
                 lines.append(f"URL: {r.url}")
             lines.append("")
-            lines.append(r.snippet)  # Full chunk content; chunk size comes from the search backend config.
+            lines.append(r.snippet[:self._chunk_max_chars] if r.snippet else "")
             lines.append("")
         return "\n".join(lines)

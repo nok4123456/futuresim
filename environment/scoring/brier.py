@@ -16,6 +16,8 @@ Properties:
 - No overconfidence incentive
 """
 
+from typing import Optional
+
 from .base import BaseScorer, DailyPrediction
 
 
@@ -38,7 +40,7 @@ class BrierScorer(BaseScorer):
         matcher=None,
         question_id: str = None,
         question_title: str = None
-    ) -> float:
+    ) -> Optional[float]:
         """
         Compute Brier Skill Score.
         
@@ -46,41 +48,47 @@ class BrierScorer(BaseScorer):
         """
         brier = 0.0
         
-        # Find which named outcome matches truth (if any)
-        matched_outcome = None
-        
+        # Collect ALL outcomes that match the ground truth
+        matched_outcomes = set()
+        matcher_ambiguous = False
+
         # Helper for normalized comparison (lowercase, no spaces)
         def normalize(s: str) -> str:
             return s.lower().replace(" ", "").strip()
-        
+
         truth_norm = normalize(ground_truth)
-        
+
         if ground_truth in pred.outcomes:
-            matched_outcome = ground_truth
+            matched_outcomes.add(ground_truth)
         elif matcher:
-            # LLM-based semantic matching
+            # LLM-based semantic matching — collect all equivalent outcomes
             for outcome in pred.outcomes:
-                if matcher.is_equivalent(outcome, ground_truth,
-                                         question_id=question_id, question_title=question_title,
-                                         match_type="check_guess"):
-                    matched_outcome = outcome
-                    break
+                result = matcher.is_equivalent(outcome, ground_truth,
+                                               question_id=question_id, question_title=question_title,
+                                               match_type="check_guess")
+                if result is True:
+                    matched_outcomes.add(outcome)
+                elif result is None:
+                    matcher_ambiguous = True
         else:
             # Exact matching with normalization (lowercase + no spaces)
             for outcome in pred.outcomes:
                 if normalize(outcome) == truth_norm:
-                    matched_outcome = outcome
-                    break
-        
-        # Sum over named outcomes
+                    matched_outcomes.add(outcome)
+
+        # If the matcher was ambiguous and we found no matches, exclude from scoring
+        if not matched_outcomes and matcher_ambiguous:
+            return None
+
+        # Sum over named outcomes — all matched outcomes get y=1
         for outcome, prob in pred.outcomes.items():
-            y = 1.0 if outcome == matched_outcome else 0.0
+            y = 1.0 if outcome in matched_outcomes else 0.0
             brier += (prob - y) ** 2
-        
+
         # If truth not in named outcomes, include it with p=0
-        if matched_outcome is None:
+        if not matched_outcomes:
             brier += (0.0 - 1.0) ** 2  # = 1
-        
+
         return 1.0 - brier
 
 

@@ -380,7 +380,7 @@ def create_agents_from_config(config: dict, args, output_dir: str, search_tool=N
                 harness_backend=harness_backend,
                 opencode_path=agent_def.get('opencode_path', defaults.get('opencode_path', 'opencode')),
                 codex_path=agent_def.get('codex_path', defaults.get('codex_path', 'codex')),
-                reasoning_effort=agent_def.get('reasoning_effort', defaults.get('reasoning_effort', 'high')),
+                reasoning_effort=agent_def.get('reasoning_effort', defaults.get('reasoning_effort', 'xhigh')),
                 codex_resume=bool(agent_def.get('codex_resume', defaults.get('codex_resume', False))),
                 prompt_mode=prompt_mode,
                 # Active memory hardcodes the maximal-handholding shared sections
@@ -718,7 +718,7 @@ def main():
     parser.add_argument("--max_tokens", type=int, default=2048,
                        help="Max output tokens to generate per LLM call")
     # Answer matching settings
-    parser.add_argument("--matching", choices=["exact", "openrouter", "deepseek"], default="exact",
+    parser.add_argument("--matching", choices=["exact", "openrouter", "deepseek"], default="openrouter",
                        help="Answer matching mode: 'exact' (no API), 'openrouter', or 'deepseek'")
     parser.add_argument("--matcher", default=MATCHER_PATH,
                        help="Matcher model: OpenRouter or DeepSeek model ID")

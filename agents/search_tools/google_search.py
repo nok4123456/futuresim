@@ -59,7 +59,15 @@ class GoogleNewsSearchTool(BaseSearchTool):
         current_date: ISO date string of the simulation date (for logging / context).
         """
         del search_type  # not applicable — Serper always uses keyword match
-        del current_date  # unused for now — available for future filtering
+
+        # Parse simulation date for accurate relative date parsing
+        reference_date: Optional[date] = None
+        if current_date:
+            try:
+                reference_date = date.fromisoformat(current_date)
+            except (ValueError, TypeError):
+                pass
+
         if not self._available:
             return []
 
@@ -93,7 +101,7 @@ class GoogleNewsSearchTool(BaseSearchTool):
 
         results: List[SearchResult] = []
         for item in data.get("news", [])[:max_results]:
-            pub_date = self._parse_serper_date(item.get("date", ""))
+            pub_date = self._parse_serper_date(item.get("date", ""), reference_date=reference_date)
             # Apply best-effort date filters
             if min_date and pub_date and pub_date < min_date:
                 continue
@@ -122,15 +130,15 @@ class GoogleNewsSearchTool(BaseSearchTool):
         return None
 
     @staticmethod
-    def _parse_serper_date(date_str: str) -> Optional[date]:
+    def _parse_serper_date(date_str: str, reference_date: Optional[date] = None) -> Optional[date]:
         """Parse Serper.dev relative dates like '2 days ago' or absolute dates."""
         if not date_str:
             return None
         # Serper returns relative strings like "2 days ago", "3 hours ago", "1 week ago"
         import re
-        from datetime import date, timedelta
+        from datetime import date as date_type, timedelta
 
-        today = date.today()
+        today = reference_date if reference_date is not None else date_type.today()
         date_str_lower = date_str.strip().lower()
 
         # "X days ago"

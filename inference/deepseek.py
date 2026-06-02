@@ -9,7 +9,7 @@ Auth: Bearer <DEEPSEEK_API_KEY>
 """
 
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 import requests
 
@@ -49,24 +49,39 @@ class DeepSeekInference(BaseInference):
     def _sanitize_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         DeepSeek strictly requires every assistant message with tool_calls to be
-        immediately followed by tool messages for every tool_call_id.
+        immediately followed by tool messages for every tool_call_id.  Because
+        the agent loop may inject budget / memory prompts between tool results,
+        we flatten the conversation to text-only form.
 
-        Strip all tool_calls from assistant messages and convert tool-role messages
-        into user-role messages (preserving their content), so the model keeps full
-        context without triggering DeepSeek's strict tool-call pairing check.
+        Assistant tool_calls are replaced with a compact text annotation so the
+        model still sees which functions were called.  Tool-role messages become
+        user-role messages with the tool name and result content preserved.
         """
         cleaned: List[Dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role", "")
             if role == "assistant" and msg.get("tool_calls"):
                 stripped = {k: v for k, v in msg.items() if k != "tool_calls"}
+                # Insert a text annotation so the model can see what it called.
+                calls = msg["tool_calls"]
+                if isinstance(calls, list) and calls:
+                    names = []
+                    for tc in calls:
+                        fn = tc.get("function", {})
+                        names.append(fn.get("name", "unknown"))
+                    annotation = f"[Tool call: {', '.join(names)}]"
+                    existing = stripped.get("content", "")
+                    stripped["content"] = (
+                        f"{existing}\n{annotation}" if existing else annotation
+                    )
                 cleaned.append(stripped)
             elif role == "tool":
                 content = msg.get("content", "")
-                tc_id = msg.get("tool_call_id", "")
                 tc_name = msg.get("name", "tool")
-                prefix = f"[tool_result id={tc_id} name={tc_name}]\n"
-                cleaned.append({"role": "user", "content": prefix + str(content)})
+                cleaned.append({
+                    "role": "user",
+                    "content": f"[{tc_name} result]\n{str(content)}",
+                })
             else:
                 cleaned.append(msg)
         return cleaned
@@ -86,6 +101,25 @@ class DeepSeekInference(BaseInference):
         self._apply_default_kwargs(payload)
 
         return payload
+
+    @staticmethod
+    def _extract_chat_text_and_usage(data: Dict[str, Any]) -> Tuple[str, Dict]:
+        content, usage = BaseInference._extract_chat_text_and_usage(data)
+        if "choices" not in data:
+            return content, usage
+
+        message = data["choices"][0]["message"]
+        # DeepSeek V4 returns reasoning_content in the message; preserve it
+        # for subsequent turns (V4 rejects requests without echoed reasoning).
+        reasoning = message.get("reasoning_content") or message.get("reasoning")
+        if reasoning:
+            usage["_reasoning_content"] = reasoning
+
+        finish_reason = data["choices"][0].get("finish_reason")
+        if finish_reason:
+            usage["_finish_reason"] = finish_reason
+
+        return content, usage
 
     def _request_json_with_retry(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -168,5 +202,4 @@ class DeepSeekInference(BaseInference):
                     time.sleep(delay)
                     continue
 
-        print(f"  [DeepSeek] Request failed after {self.max_retries} retries: {last_error}. Returning empty output.")
-        return {}
+        raise RuntimeError(f"Request failed after {self.max_retries} retries: {last_error}")

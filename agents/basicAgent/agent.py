@@ -864,7 +864,12 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
         forecast_interface,
         current_date: date,
     ) -> List[Dict[str, Any]]:
-        """Inject a forced-submit prompt when no prediction was made today."""
+        """Inject a forced-submit prompt when no prediction was made today.
+
+        Retries up to 2 additional times (3 total) with increasingly insistent
+        prompts, because flash/lightweight models sometimes miss the tool-call
+        instruction on the first attempt.
+        """
         resolved_qids = {q.qid for q in getattr(forecast_interface, 'resolved_questions', [])}
         active_questions = [
             q for q in forecast_interface.questions.values()
@@ -890,47 +895,91 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
         if not tools:
             return []
 
-        prompt = (
-            f"DAILY SUBMIT REQUIRED: You have not submitted a prediction today "
-            f"({current_date.isoformat()}). "
-            f"You MUST call submit_forecasts NOW. No other tools are available. "
-            f"Submit your best probability estimate for this question:\n"
-            f"QID: {target.qid}\n"
-            f"Title: {target.title}\n"
-            f"Resolution: {target.resolution_date}"
-        )
-        messages.append({"role": "user", "content": prompt})
-
         sampling_params = dict(self.config.sampling_params or {})
         sampling_params["tool_choice"] = "auto"
 
-        try:
-            resp_json = self._call_chat_json_with_retries(
-                messages=messages, tools=tools, sampling_params=sampling_params,
-            )
-        except Exception as e:
-            print(f"  [{self.agent_id}] Forced daily submit failed: {e}")
-            return []
-
         from .tools import chat_response_to_action, single_call_to_parsed_action
-        _parsed, _text, tool_calls = chat_response_to_action(resp_json)
-        assistant_message = extract_assistant_message(resp_json)
-        self._append_assistant_message(messages=messages, assistant_message=assistant_message)
 
-        forecasts = []
-        for tc in tool_calls:
-            tc_parsed, _ = single_call_to_parsed_action(tc)
-            if tc_parsed and tc_parsed.action_type == "submit":
-                fcasts = self._handle_submit(
-                    messages, forecast_interface, "", tc_parsed,
-                    self._create_budget_tracker(),
-                    qid=target.qid, tool_call=tc,
+        msg_count_before = len(messages)
+
+        for attempt in range(3):
+            if attempt == 0:
+                prompt = (
+                    f"DAILY SUBMIT REQUIRED: You have not submitted a prediction today "
+                    f"({current_date.isoformat()}). "
+                    f"You MUST call submit_forecasts NOW. No other tools are available. "
+                    f"Submit your best probability estimate for this question:\n"
+                    f"QID: {target.qid}\n"
+                    f"Title: {target.title}\n"
+                    f"Resolution: {target.resolution_date}"
                 )
-                forecasts.extend(fcasts)
+            elif attempt == 1:
+                prompt = (
+                    f"SUBMIT FORECASTS IS THE ONLY AVAILABLE TOOL. "
+                    f"You MUST include a tool_call for submit_forecasts in your response. "
+                    f"Do NOT respond with text only. Call the function submit_forecasts with:\n"
+                    f"QID: {target.qid}\n"
+                    f"Title: {target.title}\n"
+                    f"Provide your best probability estimate as a forecast."
+                )
+            else:
+                # Look up prior prediction for the target question
+                prior_str = ""
+                history = forecast_interface.histories.get(target.qid)
+                if history:
+                    prior_pred = history.get_latest_prediction(self.agent_id)
+                    if prior_pred and prior_pred.outcomes:
+                        prior_items = ", ".join(
+                            f"{k}: {v:.2f}" for k, v in list(prior_pred.outcomes.items())[:5]
+                        )
+                        prior_str = f" Your previous estimate was: {prior_items}."
+                prompt = (
+                    f"FINAL ATTEMPT — you will NOT get another chance. "
+                    f"Call submit_forecasts with qid=\"{target.qid}\" NOW. "
+                    f"Submit your best probability estimate." + prior_str
+                )
 
-        if forecasts:
-            print(f"  [{self.agent_id}] Forced daily submit: {len(forecasts)} prediction(s)")
-        return forecasts
+            messages.append({"role": "user", "content": prompt})
+
+            try:
+                resp_json = self._call_chat_json_with_retries(
+                    messages=messages, tools=tools, sampling_params=sampling_params,
+                )
+            except Exception as e:
+                print(f"  [{self.agent_id}] Forced daily submit attempt {attempt + 1} failed: {e}")
+                if attempt < 2:
+                    continue
+                # Clean up the force-submit messages before returning so the
+                # memory-update phase doesn't see them.
+                del messages[msg_count_before:]
+                return []
+
+            _parsed, _text, tool_calls = chat_response_to_action(resp_json)
+            assistant_message = extract_assistant_message(resp_json)
+            self._append_assistant_message(messages=messages, assistant_message=assistant_message)
+
+            forecasts = []
+            for tc in tool_calls:
+                tc_parsed, _ = single_call_to_parsed_action(tc)
+                if tc_parsed and tc_parsed.action_type == "submit":
+                    fcasts = self._handle_submit(
+                        messages, forecast_interface, "", tc_parsed,
+                        self._create_budget_tracker(),
+                        qid=target.qid, tool_call=tc,
+                    )
+                    forecasts.extend(fcasts)
+
+            if forecasts:
+                print(f"  [{self.agent_id}] Forced daily submit: {len(forecasts)} prediction(s) (attempt {attempt + 1})")
+                return forecasts
+
+            print(f"  [{self.agent_id}] Forced daily submit attempt {attempt + 1}: no forecast produced, "
+                  f"{'retrying' if attempt < 2 else 'giving up'}.")
+
+        # Clean up the force-submit messages so the memory-update phase doesn't
+        # see them.
+        del messages[msg_count_before:]
+        return []
 
     # =========================================================================
     # Memory Update Loop

@@ -105,22 +105,25 @@ def compute_snapshot_peer_scores(
                 question_id=question_id,
                 question_title=question_title,
             )
-            peer_scores[agent_id] = scorer.peer_score(my_score, [0.0])
+            if my_score is not None:
+                peer_scores[agent_id] = scorer.peer_score(my_score, [0.0])
         return peer_scores
-    
+
     # Compute raw score for each agent
     raw_scores = {}
     for agent_id, pred in predictions.items():
-        raw_scores[agent_id] = scorer.score_prediction(pred, ground_truth, matcher,
-                                                       question_id=question_id,
-                                                       question_title=question_title)
-    
+        score = scorer.score_prediction(pred, ground_truth, matcher,
+                                        question_id=question_id,
+                                        question_title=question_title)
+        if score is not None:
+            raw_scores[agent_id] = score
+
     # Compute peer scores
     peer_scores = {}
     for agent_id, my_score in raw_scores.items():
         others_scores = [s for aid, s in raw_scores.items() if aid != agent_id]
         peer_scores[agent_id] = scorer.peer_score(my_score, others_scores)
-    
+
     return peer_scores
 
 

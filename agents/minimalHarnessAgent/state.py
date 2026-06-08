@@ -78,10 +78,9 @@ class StateHelpers:
                         prev_date, self.agent_id, qid, dict(outcomes)
                     )
 
-        print(
-            f"[{self.agent_id}] Bootstrap from {bdir}: "
-            f"copied memory/{prev_iso}, predictions/{prev_iso}.json; "
-            f"injected {injected} predictions ({skipped} skipped)."
+        logger.info(
+            "Bootstrap from %s: copied memory/%s, predictions/%s.json; injected %s predictions (%s skipped).",
+            bdir, prev_iso, prev_iso, injected, skipped,
         )
 
     @staticmethod
@@ -129,7 +128,7 @@ class StateHelpers:
                     if isinstance(record, dict) and record.get("outcomes"):
                         agent_predictions[qid] = record["outcomes"]
             except Exception:
-                pass
+                logger.warning("Failed to read agent predictions for state.json", exc_info=True)
 
         # Count total active predictions.
         total_predictions = len(agent_predictions)

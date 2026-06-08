@@ -1,7 +1,10 @@
 """Action handler methods for BasicAgent."""
 
+import logging
 from datetime import date
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from agents.utils.budget import BudgetTracker
 from agents.utils.memory import ActiveMemory, StructuredMemory
@@ -215,9 +218,9 @@ class BasicActionHandlers:
                     forecast_interface.submit_prediction(pred)
                     submitted.append(f)
                     outcomes_str = ", ".join(f"{k}: {v:.2f}" for k, v in f['outcomes'].items())
-                    print(f"  [{self.agent_id}] Forecast {f['qid']}: {outcomes_str}")
+                    logger.info("Forecast %s: %s", f['qid'], outcomes_str)
                 except Exception as e:
-                    print(f"  [{self.agent_id}] Failed to submit {f['qid']}: {e}")
+                    logger.warning("Failed to submit %s: %s", f['qid'], e)
 
             if submitted:
                 # Ensure later same-day df queries reflect newly submitted predictions.
@@ -338,7 +341,7 @@ def _store_search_evidence(agent, results, qid, query):
                 category="evidence",
             )
         except Exception:
-            pass  # Memory storage is best-effort
+            logger.debug("Memory storage failed (best-effort)", exc_info=True)
 
 
 def _store_submit_evidence(agent, qid, outcomes, reasoning_text):

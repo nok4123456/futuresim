@@ -108,7 +108,7 @@ async def _splice(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
             writer.close()
         except Exception:
-            pass
+            logger.debug("writer.close() failed in _splice", exc_info=True)
 
 
 async def _proxy_handle(reader, writer, allowlist, upstream):
@@ -203,7 +203,7 @@ async def _proxy_handle(reader, writer, allowlist, upstream):
         try:
             writer.close()
         except Exception:
-            pass
+            logger.debug("writer.close() failed in _proxy_handle", exc_info=True)
 
 
 async def _raw_handle(reader, writer, host, port):
@@ -219,7 +219,7 @@ async def _raw_handle(reader, writer, host, port):
     try:
         writer.close()
     except Exception:
-        pass
+        logger.debug("writer.close() failed in _raw_handle", exc_info=True)
 
 
 def _parse_upstream(spec: Optional[str]) -> Optional[Tuple[str, int]]:

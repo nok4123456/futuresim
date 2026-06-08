@@ -5,6 +5,7 @@ OpenRouter API inference provider. Exposes chat() and chat_json() with the
 same provider-facing interface used by the agents.
 """
 
+import logging
 import time
 from threading import Lock
 from typing import Dict, Any, List, Optional, Tuple
@@ -12,6 +13,8 @@ from typing import Dict, Any, List, Optional, Tuple
 import requests
 
 from inference.base import BaseInference
+
+logger = logging.getLogger(__name__)
 
 
 class GlobalRateLimiter:
@@ -302,8 +305,8 @@ class OpenRouterInference(BaseInference):
                         error_data = response.json()
                         if "error" in error_data:
                             error_msg = f"{error_msg}: {error_data['error']}"
-                    except:
-                        pass
+                    except Exception:
+                        logger.debug("Failed to parse OpenRouter error response JSON", exc_info=True)
 
                     last_error = Exception(error_msg)
 

@@ -5,10 +5,13 @@ Provides real-time market probabilities, outcome prices, and market URLs
 for forecasting agents to compare their predictions against crowd odds.
 """
 
-import json
 import hashlib
+import json
+import logging
 from datetime import date
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 try:
     import requests
@@ -156,10 +159,10 @@ class PolymarketTool(BaseSearchTool):
             data = resp.json()
             return data if isinstance(data, list) else [data] if isinstance(data, dict) else []
         except requests.RequestException as e:
-            print(f"  [Polymarket] Slug lookup error for '{slug}': {e}")
+            logger.warning("Slug lookup error for '%s': %s", slug, e)
             return []
         except Exception as e:
-            print(f"  [Polymarket] Unexpected error for slug '{slug}': {e}")
+            logger.warning("Unexpected error for slug '%s': %s", slug, e)
             return []
 
     @staticmethod
@@ -175,8 +178,8 @@ class PolymarketTool(BaseSearchTool):
             data = resp.json()
             return data if isinstance(data, list) else []
         except requests.RequestException as e:
-            print(f"  [Polymarket] Search error for '{keyword}': {e}")
+            logger.warning("Search error for '%s': %s", keyword, e)
             return []
         except Exception as e:
-            print(f"  [Polymarket] Unexpected search error: {e}")
+            logger.warning("Unexpected search error: %s", e)
             return []

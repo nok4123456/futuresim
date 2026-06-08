@@ -8,12 +8,15 @@ Endpoint: POST https://api.deepseek.com/v1/chat/completions
 Auth: Bearer <DEEPSEEK_API_KEY>
 """
 
+import logging
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
 import requests
 
 from inference.base import BaseInference
+
+logger = logging.getLogger(__name__)
 
 
 class DeepSeekInference(BaseInference):
@@ -173,7 +176,7 @@ class DeepSeekInference(BaseInference):
                         if "error" in error_data:
                             error_msg = f"{error_msg}: {error_data['error']}"
                     except Exception:
-                        pass
+                        logger.debug("Failed to parse DeepSeek error response JSON", exc_info=True)
 
                     last_error = Exception(error_msg)
 

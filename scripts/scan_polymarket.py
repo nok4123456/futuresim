@@ -15,6 +15,7 @@ Usage:
 import argparse
 import csv
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -24,6 +25,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 try:
     import requests
@@ -92,7 +95,7 @@ def _save_scanned_cache(cache: Dict[str, str]) -> None:
         with open(SCANNED_CACHE, "w", encoding="utf-8") as f:
             json.dump(cache, f, indent=2)
     except Exception:
-        pass
+        logger.debug("Failed to save scanned cache", exc_info=True)
 
 
 def _prune_stale_entries(cache: Dict[str, str], ttl_hours: int = SCANNED_CACHE_TTL_HOURS) -> Dict[str, str]:
@@ -525,7 +528,7 @@ def extract_evidence_from_sim(output_dir: str) -> dict:
                                 except (ValueError, TypeError):
                                     pass
                 except Exception:
-                    pass
+                    logger.debug("Failed to extract sentiment from evidence", exc_info=True)
 
     # Merge searches
     all_searches = []

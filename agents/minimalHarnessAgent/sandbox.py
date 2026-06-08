@@ -88,6 +88,7 @@ class SandboxHelpers:
             pass_fds=(w_fd,),
         )
         os.close(w_fd)
+        log_f.close()
         # Block until ready, process death, or a 5s timeout.
         ready = b""
         try:

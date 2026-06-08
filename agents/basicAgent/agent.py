@@ -5,6 +5,9 @@ Uses Chat Completions tool-calling for all action and structured-memory loops.
 """
 
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 from datetime import date
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -95,7 +98,7 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
             try:
                 return int(rt)
             except Exception:
-                pass
+                logger.debug("Failed to parse reasoning_tokens from output_tokens_details", exc_info=True)
 
         comp_details = usage.get("completion_tokens_details")
         if isinstance(comp_details, dict):
@@ -105,7 +108,7 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
             try:
                 return int(rt)
             except Exception:
-                pass
+                logger.debug("Failed to parse reasoning_tokens from completion_tokens_details", exc_info=True)
 
         rt = usage.get("reasoning_tokens")
         if isinstance(rt, int):
@@ -445,13 +448,9 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
                         prompt_override=model_input_delta,
                     )
                     if target_qid is None:
-                        print(f"[{self.agent_id}] Context limit reached; ending this wakeup early.", flush=True)
+                        logger.warning("Context limit reached; ending this wakeup early.")
                     else:
-                        print(
-                            f"[{self.agent_id}] Context limit reached for qid {target_qid}; "
-                            "skipping the rest of this question.",
-                            flush=True,
-                        )
+                        logger.warning("Context limit reached for qid %s; skipping the rest of this question.", target_qid)
                     break
 
                 if force_final_submit_turn and not final_submit_retry_used:
@@ -478,10 +477,7 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
                 self._append_with_budget(messages, budget, message)
                 pending_input_delta.append(message)
                 if consecutive_llm_failures >= 3:
-                    print(
-                        f"[{self.agent_id}] Stopping after {consecutive_llm_failures} consecutive LLM failures.",
-                        flush=True,
-                    )
+                    logger.warning("Stopping after %s consecutive LLM failures.", consecutive_llm_failures)
                     break
                 continue
 
@@ -499,8 +495,7 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
             if finish_reason == "content_filter":
                 consecutive_content_filters += 1
                 if consecutive_content_filters >= self.config.content_filter_circuit_breaker:
-                    print(f"  [{self.agent_id}] Circuit breaker: {consecutive_content_filters} "
-                          f"consecutive content_filter responses, ending phase")
+                    logger.warning("Circuit breaker: %s consecutive content_filter responses, ending phase", consecutive_content_filters)
                     break
             else:
                 consecutive_content_filters = 0
@@ -701,7 +696,7 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
         if memory_phase and self._memory is not None:
             self._memory._save(current_date)
         elif memory_phase_eligible and not memory_phase:
-            print(f"  [{self.agent_id}] Budget exhausted before memory phase. Memory not updated in-loop.")
+            logger.warning("Budget exhausted before memory phase. Memory not updated in-loop.")
 
         self._memory_phase_completed = memory_phase
         return all_forecasts, context_limit_hit
@@ -743,7 +738,7 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
                         sampling_params=sampling_params,
                     )
             except Exception as e:
-                print(f"  [{self.agent_id}] Memory update LLM error in chat-tools mode: {e}")
+                logger.warning("Memory update LLM error in chat-tools mode: %s", e)
                 break
 
             usage = self._normalize_chat_usage(resp_json)
@@ -756,8 +751,7 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
             if finish_reason == "content_filter":
                 consecutive_content_filters += 1
                 if consecutive_content_filters >= self.config.content_filter_circuit_breaker:
-                    print(f"  [{self.agent_id}] Circuit breaker: {consecutive_content_filters} "
-                          f"consecutive content_filter responses, ending memory phase")
+                    logger.warning("Circuit breaker: %s consecutive content_filter responses, ending memory phase", consecutive_content_filters)
                     break
             else:
                 consecutive_content_filters = 0
@@ -946,7 +940,7 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
                     messages=messages, tools=tools, sampling_params=sampling_params,
                 )
             except Exception as e:
-                print(f"  [{self.agent_id}] Forced daily submit attempt {attempt + 1} failed: {e}")
+                logger.warning("Forced daily submit attempt %s failed: %s", attempt + 1, e)
                 if attempt < 2:
                     continue
                 # Clean up the force-submit messages before returning so the
@@ -970,11 +964,11 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
                     forecasts.extend(fcasts)
 
             if forecasts:
-                print(f"  [{self.agent_id}] Forced daily submit: {len(forecasts)} prediction(s) (attempt {attempt + 1})")
+                logger.info("Forced daily submit: %s prediction(s) (attempt %s)", len(forecasts), attempt + 1)
                 return forecasts
 
-            print(f"  [{self.agent_id}] Forced daily submit attempt {attempt + 1}: no forecast produced, "
-                  f"{'retrying' if attempt < 2 else 'giving up'}.")
+            action = "retrying" if attempt < 2 else "giving up"
+            logger.warning("Forced daily submit attempt %s: no forecast produced, %s.", attempt + 1, action)
 
         # Clean up the force-submit messages so the memory-update phase doesn't
         # see them.
@@ -1013,7 +1007,7 @@ class BasicAgent(BasicChatProtocol, BasicPromptBuilder, BasicMemoryPromptBuilder
         self._timer.record_cost(usage.get("cost", 0), "llm")
 
         if not response:
-            print(f"  [{self.agent_id}] Memory update got empty response from LLM, skipping.")
+            logger.warning("Memory update got empty response from LLM, skipping.")
             return
 
         messages.append({"role": "assistant", "content": response})

@@ -171,6 +171,7 @@ class McpHelpers:
             stdout=log_f,
             stderr=log_f,
         )
+        log_f.close()
 
         # socat creates the socket synchronously before accepting; wait up to 5s.
         deadline = time.time() + 5.0

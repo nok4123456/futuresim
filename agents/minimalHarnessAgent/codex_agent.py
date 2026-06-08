@@ -302,7 +302,7 @@ class CodexAgent(MinimalHarnessAgent):
         index_path.unlink(missing_ok=True)
 
         total = len(questions)
-        print(f"[{self.agent_id}] Preparing static title-search cache in {root}...")
+        logger.info("Preparing static title-search cache in %s...", root)
         with open(index_path, "a") as index_f:
             for i, q in enumerate(questions, start=1):
                 effective_current_date = self._get_warmup_current_date(current_date, q)
@@ -316,7 +316,7 @@ class CodexAgent(MinimalHarnessAgent):
                     "path": str(path),
                 }) + "\n")
                 if i % 10 == 0 or i == total:
-                    print(f"[{self.agent_id}] Static Search Progress: {i}/{total}", flush=True)
+                    logger.info("Static Search Progress: %s/%s", i, total)
 
     def _copy_warmup_runtime_logs(
         self,
@@ -435,7 +435,7 @@ class CodexAgent(MinimalHarnessAgent):
             return
 
         mode_label = self.config.prompt_mode.upper()
-        print(f"[{self.agent_id}] Starting MinimalHarness {mode_label} phase on {current_date}")
+        logger.info("Starting MinimalHarness %s phase on %s", mode_label, current_date)
 
         forecast_interface.current_agent_id = self.agent_id
 
@@ -454,7 +454,7 @@ class CodexAgent(MinimalHarnessAgent):
             self._prepare_static_search_files(questions, current_date)
 
         max_workers = max(1, min(int(self.config.warmup_parallelism or 1), total or 1))
-        print(f"[{self.agent_id}] Parallelizing MinimalHarness warmup with {max_workers} worker(s)...")
+        logger.info("Parallelizing MinimalHarness warmup with %s worker(s)...", max_workers)
 
         runtime_root = self._internal_dir / "warmup_runtime"
         runtime_root.mkdir(parents=True, exist_ok=True)
@@ -502,7 +502,7 @@ class CodexAgent(MinimalHarnessAgent):
 
                     completed += 1
                     if completed % 10 == 0 or completed == total:
-                        print(f"[{self.agent_id}] Warmup Progress: {completed}/{total}", flush=True)
+                        logger.info("Warmup Progress: %s/%s", completed, total)
         finally:
             shutil.rmtree(runtime_root, ignore_errors=True)
 
@@ -512,11 +512,11 @@ class CodexAgent(MinimalHarnessAgent):
             remove_per_question_logs=True,
         )
         if aggregated:
-            print(f"[{self.agent_id}] Aggregated {aggregated} Codex warmup transcript(s).", flush=True)
+            logger.info("Aggregated %s Codex warmup transcript(s).", aggregated)
 
         self._initial_prompt_override = None
         self.warmed_up = True
-        print(f"[{self.agent_id}] MinimalHarness {self.config.prompt_mode} complete.")
+        logger.info("MinimalHarness %s complete.", self.config.prompt_mode)
 
     def _start_codex(self) -> None:
         """Spawn a `codex exec` process for the current sim day.

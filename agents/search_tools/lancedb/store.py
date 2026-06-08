@@ -1,7 +1,8 @@
 """LanceDB search implementation."""
 
-import os
 import json
+import logging
+import os
 import re
 from datetime import date
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import List, Optional, Dict, Any
 import lancedb
 
 from ..base import BaseSearchTool, SearchResult, Article
+
+logger = logging.getLogger(__name__)
 
 
 class LanceDBSearchTool(BaseSearchTool):
@@ -61,10 +64,9 @@ class LanceDBSearchTool(BaseSearchTool):
             try:
                 # Embedding model loading delegated to external server.
                 # Set FSIM_EMBEDDING_URL to point to an embedding server.
-                print(f"[LanceDB] Note: local embedding loading removed. "
-                      f"Model path was: {self._model_path}")
+                logger.warning("Note: local embedding loading removed. Model path was: %s", self._model_path)
             except Exception as e:
-                print(f"[LanceDB] Failed to load embedding model: {e}")
+                logger.warning("Failed to load embedding model: %s", e)
     
     def _connect(self) -> None:
         if not os.path.exists(self._db_path):
@@ -77,7 +79,7 @@ class LanceDBSearchTool(BaseSearchTool):
                     self._config = json.load(f)
                 self._chunk_tokens = self._config.get("chunk_tokens", 512)
             except Exception:
-                pass
+                logger.debug("Failed to load search tool config", exc_info=True)
         
         try:
             self._db = lancedb.connect(self._db_path)
@@ -85,7 +87,7 @@ class LanceDBSearchTool(BaseSearchTool):
                 self._table = self._db.open_table(self.TABLE_NAME)
                 self._available = True
         except Exception as e:
-            print(f"[LanceDB] Failed to connect: {e}")
+            logger.warning("Failed to connect: %s", e)
     
     def search(self, query: str, max_results: int = 10, max_date: Optional[date] = None,
                search_type: str = "hybrid", min_date: Optional[date] = None,
@@ -175,7 +177,7 @@ class LanceDBSearchTool(BaseSearchTool):
                         for q2 in _build_fts_retry_candidates(query):
                             if q2 == (query or "").strip():
                                 continue
-                            print(f"[LanceDB] Retrying FTS with sanitized query: {q2}")
+                            logger.info("Retrying FTS with sanitized query: %s", q2)
                             try:
                                 results = self._table.search(q2, query_type="fts")
                                 rows = _execute(results, prefilter=True)
@@ -196,13 +198,13 @@ class LanceDBSearchTool(BaseSearchTool):
                 self._load_embedding_model()
                 
                 if not self._embedding_model:
-                    print("[LanceDB] No embedding model available for semantic/hybrid search")
+                    logger.warning("No embedding model available for semantic/hybrid search")
                     return []
                 else:
                     # Encode query with instruction prefix (per Qwen3-Embedding docs)
                     query_embedding = self._encode_query(query)
                     if not query_embedding:
-                        print("[LanceDB] Empty query embedding returned by embedding model")
+                        logger.warning("Empty query embedding returned by embedding model")
                         return []
                     if search_type == "semantic":
                         results = self._table.search(query_embedding)
@@ -217,7 +219,7 @@ class LanceDBSearchTool(BaseSearchTool):
                                 for q2 in _build_fts_retry_candidates(query):
                                     if q2 == (query or "").strip():
                                         continue
-                                    print(f"[LanceDB] Retrying hybrid with sanitized query: {q2}")
+                                    logger.info("Retrying hybrid with sanitized query: %s", q2)
                                     try:
                                         results = self._table.search(query_type="hybrid").vector(query_embedding).text(q2)
                                         rows = _execute(results, prefilter=True)
@@ -229,13 +231,13 @@ class LanceDBSearchTool(BaseSearchTool):
                                         break
                                 # All retries exhausted or non-FTS error — fall through to semantic
                             if not self._hybrid_warned:
-                                print(f"[LanceDB] Hybrid search unavailable, falling back to semantic: {e}")
+                                logger.info("Hybrid search unavailable, falling back to semantic: %s", e)
                                 self._hybrid_warned = True
                             results = self._table.search(query_embedding)
                             rows = _execute(results, prefilter=True)
             return self._to_results(rows)
         except Exception as e:
-            print(f"[LanceDB] Search failed ({search_type}): {e}")
+            logger.warning("Search failed (%s): %s", search_type, e)
             return []
     
     def _encode_query(self, query: str) -> list:
@@ -249,17 +251,17 @@ class LanceDBSearchTool(BaseSearchTool):
             # vLLM model - suppress progress bar
             outputs = self._embedding_model.embed([instruct_query], use_tqdm=False)
             if not outputs:
-                print("[LanceDB] Embedding API returned no outputs")
+                logger.warning("Embedding API returned no outputs")
                 return []
             if not outputs[0].outputs.embedding:
-                print("[LanceDB] Embedding API returned an empty embedding vector")
+                logger.warning("Embedding API returned an empty embedding vector")
                 return []
             return outputs[0].outputs.embedding
         else:
             # sentence-transformers or similar
             vec = self._embedding_model.encode(instruct_query).tolist()
             if not vec:
-                print("[LanceDB] Embedding model returned an empty embedding vector")
+                logger.warning("Embedding model returned an empty embedding vector")
                 return []
             return vec
     
@@ -297,7 +299,7 @@ class LanceDBSearchTool(BaseSearchTool):
                 return self._table.count_rows(where)
             return self._table.count_rows()
         except Exception as e:
-            print(f"[LanceDB] count_articles failed: {e}")
+            logger.warning("count_articles failed: %s", e)
             return None
 
     def _to_results(self, rows: list) -> List[SearchResult]:

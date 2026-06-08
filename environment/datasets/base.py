@@ -2,9 +2,13 @@ from abc import ABC, abstractmethod
 from datetime import date, datetime
 from typing import List, Optional, Dict
 from dataclasses import dataclass, asdict
-import pandas as pd
-import os
 import json
+import logging
+import os
+
+import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class CachedQuestion:
@@ -104,7 +108,7 @@ class DataFetcher(ABC):
                 if isinstance(opt_val, str):
                     try:
                         options = json.loads(opt_val)
-                    except:
+                    except Exception:
                         options = None
                 elif hasattr(opt_val, 'tolist'):
                     options = opt_val.tolist()
@@ -118,8 +122,8 @@ class DataFetcher(ABC):
                  if isinstance(meta_val, str):
                      try:
                          metadata = json.loads(meta_val)
-                     except:
-                         pass
+                     except Exception:
+                         logger.debug("Failed to parse metadata JSON", exc_info=True)
                  elif isinstance(meta_val, dict):
                      metadata = meta_val
             

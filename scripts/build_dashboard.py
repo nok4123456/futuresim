@@ -14,6 +14,7 @@ Usage:
 import argparse
 import csv
 import json
+import logging
 import os
 import re
 import subprocess
@@ -22,6 +23,8 @@ import textwrap
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 try:
     import requests
@@ -428,7 +431,7 @@ def _extract_reasoning(raw_log_path: str, predictions: Dict[str, dict]):
                         if q:
                             day_searches.setdefault(sim_date, []).append(q)
                 except Exception:
-                    pass
+                    logger.debug("Failed to parse search tool call", exc_info=True)
 
             # Capture query_df analysis
             if phase == "query":
@@ -443,7 +446,7 @@ def _extract_reasoning(raw_log_path: str, predictions: Dict[str, dict]):
                                 "[Queried dataset to analyze active questions]"
                             )
                 except Exception:
-                    pass
+                    logger.debug("Failed to parse query tool call", exc_info=True)
 
     # Merge into predictions
     for sim_date in predictions:
@@ -1292,7 +1295,7 @@ def main():
                 start_date = cfg.get("start_date", "") or cfg.get("sim_start_date", "")
                 end_date = cfg.get("end_date", "") or cfg.get("sim_end_date", "")
             except Exception:
-                pass
+                logger.debug("Failed to parse config.json for dates", exc_info=True)
         if not start_date:
             today = date.today()
             start_date = (today - timedelta(days=14)).isoformat()

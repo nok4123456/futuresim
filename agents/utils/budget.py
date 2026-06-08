@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 import json
 import os
 from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -49,7 +52,7 @@ def estimate_budget_tokens(payload: Any, *, model_name: str = "") -> int:
         except TypeError:
             return len(tokenizer.encode(text))
         except Exception:
-            pass
+            logger.debug("Budget tokenizer encode failed", exc_info=True)
 
     return max(1, (len(text) + 3) // 4)
 

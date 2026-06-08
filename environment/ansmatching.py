@@ -13,9 +13,12 @@ from typing import List, Dict, Optional, Callable, Tuple
 import asyncio
 import atexit
 import json
+import logging
 import os
 import re
 import time
+
+logger = logging.getLogger(__name__)
 
 
 def build_is_equivalent_prompt(predicted: str, ground_truth: str, question_title: str = None) -> str:
@@ -252,7 +255,7 @@ class AnswerMatcher:
                 self._timing_callback(duration, cost)
             except Exception:
                 # Timing callback should never break matcher correctness.
-                pass
+                logger.debug("Timing callback raised", exc_info=True)
     
     @staticmethod
     def _key_to_disk(k: tuple) -> str:
@@ -270,7 +273,7 @@ class AnswerMatcher:
             if isinstance(parts, list) and len(parts) == 4:
                 return tuple(str(x) for x in parts)
         except Exception:
-            pass
+            logger.debug("Failed to parse matcher cache key as JSON", exc_info=True)
         legacy = s.split("|||")
         if len(legacy) == 3:
             return (legacy[0], legacy[1], legacy[2], "")
@@ -287,9 +290,9 @@ class AnswerMatcher:
                 for k, v in raw_cache.items():
                     key = self._disk_to_key(str(k))
                     self._cache[key] = bool(v)
-                print(f"  Loaded matcher cache: {len(self._cache)} entries from {path}")
+                logger.info("Loaded matcher cache: %s entries from %s", len(self._cache), path)
             except Exception as e:
-                print(f"  Error loading matcher cache: {e}")
+                logger.warning("Error loading matcher cache: %s", e)
 
     def persist_cache(self) -> None:
         """Merge in-memory cache into the JSON file (atomic replace, POSIX file lock)."""
@@ -345,7 +348,7 @@ class AnswerMatcher:
                 os.replace(tmp_path, path)
                 written = True
             except Exception as exc:
-                print(f"  Error saving matcher cache: {exc}")
+                logger.warning("Error saving matcher cache: %s", exc)
         finally:
             if os.path.exists(tmp_path):
                 try:
@@ -355,7 +358,7 @@ class AnswerMatcher:
 
         if written:
             self._cache_dirty = False
-            print(f"  Persisted matcher cache: {len(self._cache)} entries -> {path}")
+            logger.info("Persisted matcher cache: %s entries -> %s", len(self._cache), path)
 
     def save_cache(self):
         """Backward-compatible alias for :meth:`persist_cache`."""
@@ -366,7 +369,7 @@ class AnswerMatcher:
             if self.cache_path and self._cache_dirty:
                 self.persist_cache()
         except Exception:
-            pass
+            logger.debug("atexit cache persist failed", exc_info=True)
 
     def _normalize(self, outcome: str) -> str:
         """Normalize outcome for exact match comparison."""
@@ -595,12 +598,11 @@ class AnswerMatcher:
                 uncached.append((predicted, ground_truth, qid, qtitle))
         if not uncached:
             return
-        print(f"  [Matcher] warming cache: {len(uncached)} calls (concurrency={max_concurrency})")
+        logger.info("Warming cache: %s calls (concurrency=%s)", len(uncached), max_concurrency)
         started = time.perf_counter()
         self.batch_is_equivalent(uncached, max_concurrency=max_concurrency)
         elapsed = time.perf_counter() - started
-        print(f"  [Matcher] cache warm done: {len(uncached)} calls in {elapsed:.1f}s "
-              f"({len(uncached)/max(elapsed,0.01):.1f} calls/s)")
+        logger.info("Cache warm done: %s calls in %.1fs (%s calls/s)", len(uncached), elapsed, f"{len(uncached)/max(elapsed,0.01):.1f}")
 
     def _resolve_api_key(self) -> str:
         """Extract the API key from the inference provider."""

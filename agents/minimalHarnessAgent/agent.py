@@ -175,9 +175,10 @@ class MinimalHarnessAgent(StateHelpers, McpHelpers, SandboxHelpers, BaseAgent):
             self.config.prompt_mode in ("active_memory", "active_memory2")
             and self.config.handholding_version != "v3"
         ):
-            print(
-                f"[minimalHarness] prompt_mode={self.config.prompt_mode!r} coerces "
-                f"handholding_version {self.config.handholding_version!r} -> 'v3'."
+            logger.info(
+                "prompt_mode=%r coerces handholding_version %r -> 'v3'.",
+                self.config.prompt_mode,
+                self.config.handholding_version,
             )
             self.config.handholding_version = "v3"
 
@@ -297,7 +298,7 @@ class MinimalHarnessAgent(StateHelpers, McpHelpers, SandboxHelpers, BaseAgent):
             and self.warmed_up
             and self.config.start_date == current_date
         ):
-            print(f"[{self.agent_id}] Skipping standard act() on Day 0 (Warmup already completed).")
+            logger.info("Skipping standard act() on Day 0 (Warmup already completed).")
             forecast_interface.next_day()
             return []
 

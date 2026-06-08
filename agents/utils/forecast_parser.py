@@ -674,31 +674,4 @@ def _parse_mem_body(body: str, require_question: bool = True) -> Optional[dict]:
 _parse_memo_body = _parse_mem_body
 
 
-# Legacy exports for backward compatibility (deprecated)
-def extract_action_code(response: str) -> Optional[str]:
-    """
-    DEPRECATED: Use parse_action() instead.
-    
-    Extract Python code from <action> tag in agent response.
-    """
-    result = parse_action(response)
-    if result.action_type == "query" and result.code:
-        return result.code
-    return None
 
-
-def parse_forecasts(response: str, 
-                    max_outcomes: int = 5) -> Tuple[List[Dict], Optional[str]]:
-    """
-    DEPRECATED: Use parse_action() instead.
-    
-    Parse XML forecasts from agent response.
-    """
-    result = parse_action(response, max_outcomes)
-    if result.action_type == "submit":
-        if result.error:
-            return [], result.error
-        return result.forecasts or [], None
-    elif result.forecasts:
-        return result.forecasts, None
-    return [], result.error or "No forecasts found"

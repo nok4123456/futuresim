@@ -1,6 +1,9 @@
+import logging
+import time
 from datetime import date, timedelta
 from typing import List, Dict, Any, Optional, NamedTuple
-import time
+
+logger = logging.getLogger(__name__)
 
 from agents.basicAgent.agent import BasicAgent
 from agents.basicAgent.config import AgentConfig
@@ -111,7 +114,7 @@ Requirements:
         Execute warmup phase: predict on ALL active questions individually.
         This effectively replaces the standard 'act' loop for Day 0.
         """
-        print(f"[{self.agent_id}] Starting WARMUP phase on {current_date}")
+        logger.info("Starting WARMUP phase on %s", current_date)
         self._require_chat_tools()
         
         # Start timing for Day 0
@@ -148,7 +151,7 @@ Requirements:
         # Use configurable parallelism (default 20 from config)
         max_workers = getattr(self.config, 'warmup_parallelism', 20)
         
-        print(f"[{self.agent_id}] Parallelizing warmup with {max_workers} threads...")
+        logger.info("Parallelizing warmup with %s threads...", max_workers)
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_qid = {
@@ -161,14 +164,11 @@ Requirements:
                 try:
                     future.result()
                     if (i+1) % 10 == 0:
-                        print(f"[{self.agent_id}] Warmup Progress: {i+1}/{len(questions)}")
+                        logger.info("Warmup Progress: %s/%s", i+1, len(questions))
                 except Exception as e:
-                    print(f"[{self.agent_id}] Error processing question {qid}: {e}")
+                    logger.warning("Error processing question %s: %s", qid, e)
                     if self._is_fatal_inference_failure(e):
-                        print(
-                            f"[{self.agent_id}] Fatal inference failure detected. Aborting warmup immediately.",
-                            flush=True,
-                        )
+                        logger.critical("Fatal inference failure detected. Aborting warmup immediately.")
                         for pending in future_to_qid:
                             if not pending.done():
                                 pending.cancel()
@@ -183,7 +183,7 @@ Requirements:
         from agents.utils.memory import ActiveMemory
         if isinstance(self._memory, ActiveMemory) and hasattr(self, '_warmup_mem_entries'):
             entries = self._warmup_mem_entries
-            print(f"[{self.agent_id}] Seeding mem_df with {len(entries)} warmup entries...")
+            logger.info("Seeding mem_df with %s warmup entries...", len(entries))
             for entry in entries:
                 self._memory.mem_add(
                     qid=entry["qid"],
@@ -200,7 +200,7 @@ Requirements:
         from agents.utils.memory import StructuredMemory
         if isinstance(self._memory, StructuredMemory) and hasattr(self, '_warmup_structured_entries'):
             entries = self._warmup_structured_entries
-            print(f"[{self.agent_id}] Seeding structured memory with {len(entries)} warmup entries...")
+            logger.info("Seeding structured memory with %s warmup entries...", len(entries))
             for entry in entries:
                 try:
                     self._memory.add_entry(
@@ -209,7 +209,7 @@ Requirements:
                         content=entry["content"],
                     )
                 except ValueError as e:
-                    print(f"[{self.agent_id}] Warmup memory seed skipped: {e}")
+                    logger.warning("Warmup memory seed skipped: %s", e)
             del self._warmup_structured_entries
 
         # End timing and save stats for Day 0
@@ -220,7 +220,7 @@ Requirements:
         # Reset timer for subsequent standard days
         self._timer.reset()
 
-        print(f"[{self.agent_id}] Warmup complete.")
+        logger.info("Warmup complete.")
 
     def _process_single_question(self, q, current_date, forecast_interface):
         """Process a single question validation loop (thread-safe)."""
@@ -307,9 +307,9 @@ Requirements:
                 self._timer.record_cost(usage.get("cost", 0), "llm")
             except Exception as e:
                 if attempt < self.WARMUP_MEMORY_MAX_RETRIES:
-                    print(f"[{self.agent_id}] Warmup mem finalize retry {attempt+1} for qid {qid} after error: {e}")
+                    logger.warning("Warmup mem finalize retry %s for qid %s after error: %s", attempt+1, qid, e)
                     continue
-                print(f"[{self.agent_id}] Warmup mem finalize failed for qid {qid}: {e}")
+                logger.warning("Warmup mem finalize failed for qid %s: %s", qid, e)
                 continue
 
             parsed, _, _ = chat_response_to_action(resp_json)
@@ -318,15 +318,9 @@ Requirements:
                 add_qid = str(add.get("qid", qid))
                 if add_qid != str(qid):
                     if attempt < self.WARMUP_MEMORY_MAX_RETRIES:
-                        print(
-                            f"[{self.agent_id}] Warmup mem finalize retry {attempt+1} for qid {qid}: "
-                            f"got qid={add_qid!r}"
-                        )
+                        logger.warning("Warmup mem finalize retry %s for qid %s: got qid=%r", attempt+1, qid, add_qid)
                         continue
-                    print(
-                        f"[{self.agent_id}] Warmup mem finalize invalid for qid {qid}: "
-                        f"got qid={add_qid!r}"
-                    )
+                    logger.warning("Warmup mem finalize invalid for qid %s: got qid=%r", qid, add_qid)
                     break
                 return {
                     "qid": add_qid,
@@ -336,15 +330,9 @@ Requirements:
                 }
 
             if attempt < self.WARMUP_MEMORY_MAX_RETRIES:
-                print(
-                    f"[{self.agent_id}] Warmup mem finalize retry {attempt+1} for qid {qid}: "
-                    f"action={getattr(parsed, 'action_type', None)}"
-                )
+                logger.warning("Warmup mem finalize retry %s for qid %s: action=%s", attempt+1, qid, getattr(parsed, 'action_type', None))
                 continue
-            print(
-                f"[{self.agent_id}] Warmup mem finalize invalid for qid {qid}: "
-                f"action={getattr(parsed, 'action_type', None)}"
-            )
+            logger.warning("Warmup mem finalize invalid for qid %s: action=%s", qid, getattr(parsed, 'action_type', None))
 
         return self._warmup_mem_placeholder(qid, question_title, submitted_forecasts)
 
@@ -447,7 +435,7 @@ Requirements:
             flat_yaml_path.write_text(
                 yaml.safe_dump(entries, default_flow_style=False, allow_unicode=True)
             )
-            print(f"[{self.agent_id}] Warmup interop: wrote {len(entries)} entries to {flat_yaml_path.name}")
+            logger.info("Warmup interop: wrote %s entries to %s", len(entries), flat_yaml_path.name)
 
     def _request_warmup_structured_memory(
         self,
@@ -478,9 +466,9 @@ Requirements:
                 self._timer.record_cost(usage.get("cost", 0), "llm")
             except Exception as e:
                 if attempt < self.WARMUP_MEMORY_MAX_RETRIES:
-                    print(f"[{self.agent_id}] Warmup structured memory retry {attempt+1} for qid {qid} after error: {e}")
+                    logger.warning("Warmup structured memory retry %s for qid %s after error: %s", attempt+1, qid, e)
                     continue
-                print(f"[{self.agent_id}] Warmup structured memory finalize failed for qid {qid}: {e}")
+                logger.warning("Warmup structured memory finalize failed for qid %s: %s", qid, e)
                 continue
 
             parsed, _, _ = chat_response_to_action(resp_json)
@@ -488,15 +476,9 @@ Requirements:
                 return dict(parsed.memory_new_data)
 
             if attempt < self.WARMUP_MEMORY_MAX_RETRIES:
-                print(
-                    f"[{self.agent_id}] Warmup structured memory retry {attempt+1} for qid {qid}: "
-                    f"action={getattr(parsed, 'action_type', None)}"
-                )
+                logger.warning("Warmup structured memory retry %s for qid %s: action=%s", attempt+1, qid, getattr(parsed, 'action_type', None))
                 continue
-            print(
-                f"[{self.agent_id}] Warmup structured memory invalid for qid {qid}: "
-                f"action={getattr(parsed, 'action_type', None)}"
-            )
+            logger.warning("Warmup structured memory invalid for qid %s: action=%s", qid, getattr(parsed, 'action_type', None))
 
         return self._warmup_structured_placeholder(qid, question_title, submitted_forecasts)
 
@@ -508,7 +490,7 @@ Requirements:
         Override act to skip Day 0 if warmup was done.
         """
         if current_date == self.start_date and self.warmed_up:
-            print(f"[{self.agent_id}] Skipping standard act() on Day 0 (Warmup already completed).")
+            logger.info("Skipping standard act() on Day 0 (Warmup already completed).")
             forecast_interface.next_day()
             return []
             
@@ -722,7 +704,7 @@ class AllQDailyAgent(AllQAgent):
     """
 
     def act(self, doc_interface, forecast_interface, current_date: date):
-        print(f"[{self.agent_id}] Starting ALLQD daily run on {current_date}")
+        logger.info("Starting ALLQD daily run on %s", current_date)
         self._require_chat_tools()
 
         # Start timing for the day
@@ -742,7 +724,7 @@ class AllQDailyAgent(AllQAgent):
         from concurrent.futures import ThreadPoolExecutor, as_completed
         max_workers = getattr(self.config, 'warmup_parallelism', 20)
 
-        print(f"[{self.agent_id}] Parallelizing allqd with {max_workers} threads over {len(questions)} questions...")
+        logger.info("Parallelizing allqd with %s threads over %s questions...", max_workers, len(questions))
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_qid = {
@@ -754,14 +736,11 @@ class AllQDailyAgent(AllQAgent):
                 try:
                     future.result()
                     if (i + 1) % 10 == 0:
-                        print(f"[{self.agent_id}] ALLQD Progress: {i+1}/{len(questions)}")
+                        logger.info("ALLQD Progress: %s/%s", i+1, len(questions))
                 except Exception as e:
-                    print(f"[{self.agent_id}] Error processing question {qid}: {e}")
+                    logger.warning("Error processing question %s (allqd): %s", qid, e)
                     if self._is_fatal_inference_failure(e):
-                        print(
-                            f"[{self.agent_id}] Fatal inference failure detected. Aborting allqd immediately.",
-                            flush=True,
-                        )
+                        logger.critical("Fatal inference failure detected. Aborting allqd immediately.")
                         for pending in future_to_qid:
                             if not pending.done():
                                 pending.cancel()

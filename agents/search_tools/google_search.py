@@ -5,10 +5,13 @@ Provides real-time web search without requiring a local LanceDB corpus.
 Set SERPER_API_KEY in your environment or .env file to enable.
 """
 
-import os
 import hashlib
+import logging
+import os
 from datetime import date
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 try:
     import requests
@@ -88,15 +91,15 @@ class GoogleNewsSearchTool(BaseSearchTool):
             data = response.json()
         except requests.exceptions.HTTPError as e:
             if e.response is not None and e.response.status_code == 429:
-                print(f"  [GoogleSearch] Rate limited by Serper.dev. Check quota.")
+                logger.warning("Rate limited by Serper.dev. Check quota.")
             else:
-                print(f"  [GoogleSearch] HTTP error: {e}")
+                logger.warning("HTTP error: %s", e)
             return []
         except requests.exceptions.RequestException as e:
-            print(f"  [GoogleSearch] Network error: {e}")
+            logger.warning("Network error: %s", e)
             return []
         except Exception as e:
-            print(f"  [GoogleSearch] Unexpected error: {e}")
+            logger.warning("Unexpected error: %s", e)
             return []
 
         results: List[SearchResult] = []
@@ -180,28 +183,28 @@ def create_search_tool(search_db: str = "", embedding_model=None,
     effective = env_tool or search_tool_type.strip().lower()
 
     if effective == "google":
-        print("  Search tool: Google News (Serper.dev API)")
+        logger.info("Search tool: Google News (Serper.dev API)")
         tool = GoogleNewsSearchTool()
         if not tool.is_available:
-            print("  Warning: SERPER_API_KEY not set — Google search disabled.")
+            logger.warning("SERPER_API_KEY not set — Google search disabled.")
             return None
         return tool
 
     if effective == "polymarket":
         from agents.search_tools.polymarket import PolymarketTool
-        print("  Search tool: Polymarket (Gamma API)")
+        logger.info("Search tool: Polymarket (Gamma API)")
         tool = PolymarketTool()
         return tool
 
     # Default: LanceDB
     if search_db:
         from agents.search_tools.lancedb import LanceDBSearchTool
-        print(f"  Search tool: LanceDB")
+        logger.info("Search tool: LanceDB")
         tool = LanceDBSearchTool(search_db, embedding_model=embedding_model)
         if tool.is_available:
-            print(f"  LanceDB connected: {search_db}")
+            logger.info("LanceDB connected: %s", search_db)
         else:
-            print(f"  Warning: LanceDB not available at {search_db}")
+            logger.warning("LanceDB not available at %s", search_db)
             return None
         return tool
 
